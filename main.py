@@ -117,12 +117,14 @@ def main():
     
     # For compatibility with underlying utility functions, 'epsilon' is aliased as 'radius'.
     args.radius = args.epsilon 
-
+    norm = str(args.norm).lower()
     # --- 2. Setup Device, Data, and Model ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     # Load the benchmark dataset and the pre-trained model
     images, targets, epsilon_rescaled, classes = load_dataset_benchmark(args)
+    images = images[:50]
+    targets = targets[:50]
     model = load_model(args, model_zoo, device)
     model.eval() # Set the model to evaluation mode
     # --- 3. Calculate Clean Accuracy (Baseline) ---
@@ -149,36 +151,35 @@ def main():
     print("\nStarting robustness evaluations...")
 
     L_2=1
-    print("CHECK : ", images[0].numel())
-    L = convert_lipschitz_constant(L_2, args.norm, input_dim=images[0].numel())
+    L = convert_lipschitz_constant(L_2, norm, input_dim=images[0].numel())
 
     # Note from author: It seems that the radius obtained should be rescaled to be comparable to epsilon.
     # This is a crucial step to ensure fair comparison across different data normalizations.
-    _, certificates_cra, time_cra = compute_certificates_CRA(images, model, epsilon_rescaled, clean_indices, norm = args.norm, L = L)
+    _, certificates_cra, time_cra = compute_certificates_CRA(images, model, epsilon_rescaled, clean_indices, norm = norm, L = L)
     print(f"  - Certified Robustness (CRA): {certificates_cra:.2f}% | Time: {time_cra:.4f}s")
     # certificates_cra, time_cra = 0,0
-    pgd_era, time_pgd = compute_pgd_era_and_time(images, targets, model, args.radius, clean_indices, norm = args.norm)
+    pgd_era, time_pgd = compute_pgd_era_and_time(images, targets, model, args.epsilon, clean_indices, norm = norm)
     print(f"  - Empirical Robustness (PGD): {pgd_era:.2f}% | Time: {time_pgd:.4f}s")
     # pgd_era, time_pgd = 0,0
-    aa_era, time_aa = compute_autoattack_era_and_time(images, targets, model, args.radius, clean_indices, norm = args.norm)
+    aa_era, time_aa = compute_autoattack_era_and_time(images, targets, model, args.epsilon, clean_indices, norm = norm)
     print(f"  - Empirical Robustness (AutoAttack): {aa_era:.2f}% | Time: {time_aa:.4f}s")
     # aa_era, time_aa = 0,0
-   
-
     lirpa_alpha_vra, time_lirpa_alpha = compute_alphacrown_vra_and_time(images, targets, model, epsilon_rescaled, clean_indices, norm = args.norm)
     print(f"  - Certified Robustness (LIRPA α-CROWN): {lirpa_alpha_vra:.2f}% | Time: {time_lirpa_alpha:.4f}s")
     # lirpa_alpha_vra, time_lirpa_alpha = 0, 0
-    #TODO if norm = 'inf':
-    # lirpa_beta_vra, time_lirpa_beta = compute_alphabeta_vra_and_time(args.dataset, args.model, args.model_path, epsilon_rescaled, "cifar_l2_norm.yaml")
-    # print(f"  - Certified Robustness (LIRPA β-CROWN): {lirpa_beta_vra:.2f}% | Time: {time_lirpa_beta:.4f}s")
-    lirpa_beta_vra, time_lirpa_beta = 0, 0
-    #TODO if norm = '2':
-    sdp_crown_vra, time_sdp = compute_sdp_crown_vra(images, targets, model, epsilon_rescaled, clean_indices, device, classes, args)
-    print(f"  - Certified Robustness (SDP-CROWN): {sdp_crown_vra:.2f}% | Time: {time_sdp:.4f}s")
-    sdp_crown_vra, time_sdp = 0, 0
+    #FIXME import utils in both libs so we may have to move the imports in the if 
+    if norm =='inf':
+        #FIXME epsilon_rescaled or args.epsilon ?
+        # lirpa_beta_vra, time_lirpa_beta = compute_alphabeta_vra_and_time(args.dataset, args.model, args.model_path, epsilon_rescaled, "cifar_l2_norm.yaml", clean_indices)
+        # print(f"  - Certified Robustness (LIRPA β-CROWN): {lirpa_beta_vra:.2f}% | Time: {time_lirpa_beta:.4f}s")
+        lirpa_beta_vra, time_lirpa_beta = 0, 0
+        sdp_crown_vra, time_sdp = 0, 0
+    elif norm == '2':
+        sdp_crown_vra, time_sdp = compute_sdp_crown_vra(images, targets, model, epsilon_rescaled, clean_indices, device, classes, args)
+        print(f"  - Certified Robustness (SDP-CROWN): {sdp_crown_vra:.2f}% | Time: {time_sdp:.4f}s")
+        lirpa_beta_vra, time_lirpa_beta = 0, 0
     # --- 5. Store and Save Results ---
     # The results are collected in a dictionary. The keys will become the CSV header.
-    #TODO not the  same results wth norm
     result_dict = {
         'epsilon': args.epsilon,
         'certificate': certificates_cra,
@@ -197,20 +198,20 @@ def main():
     
     add_result_and_sort(result_dict, args.output_csv, norm=args.norm)
     # Save results to a Pickle file if a path is provided.
-    #TODO adapt to linf norm
-    if args.output_pkl:
-        base, ext = os.path.splitext(args.output_pkl)
-        epsilon_str = str(args.epsilon).replace('.', '_')
-        # Create a unique filename to avoid overwriting results from different epsilon values
-        new_pkl_path = f"{base}_epsilon_{epsilon_str}{ext}"
+
+    # if args.output_pkl:
+    #     base, ext = os.path.splitext(args.output_pkl)
+    #     epsilon_str = str(args.epsilon).replace('.', '_')
+    #     # Create a unique filename to avoid overwriting results from different epsilon values
+    #     new_pkl_path = f"{base}_epsilon_{epsilon_str}{ext}"
         
-        try:
-            with open(new_pkl_path, 'wb') as pkl_file:
-                # We save the dictionary directly in a list
-                pickle.dump([result_dict], pkl_file)
-            print(f"✅ Results also saved to Pickle file: {new_pkl_path}")
-        except IOError as e:
-            print(f"Error: Could not write to Pickle file {new_pkl_path}. Reason: {e}")
+    #     try:
+    #         with open(new_pkl_path, 'wb') as pkl_file:
+    #             # We save the dictionary directly in a list
+    #             pickle.dump([result_dict], pkl_file)
+    #         print(f"✅ Results also saved to Pickle file: {new_pkl_path}")
+    #     except IOError as e:
+    #         print(f"Error: Could not write to Pickle file {new_pkl_path}. Reason: {e}")
 
 
 if __name__ == '__main__':

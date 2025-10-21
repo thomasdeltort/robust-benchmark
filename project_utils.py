@@ -20,6 +20,62 @@ import os
 import copy
 from torch.nn.utils.parametrize import is_parametrized
 
+class GroupSort_General(nn.Module):
+    """
+    A universal, auto_lirpa-compatible PyTorch module that sorts pairs of features.
+
+    This module can handle inputs of any shape (e.g., 2D, 4D). It works by 
+    temporarily flattening the feature dimensions, applying the sort logic in a 
+    verifier-friendly way (with ReLU on a 2D tensor), and then reshaping the 
+    output back to the original input shape.
+
+    The total number of features (product of dimensions after the batch dim) must be even.
+    """
+    def __init__(self):
+        super(GroupSort_General, self).__init__()
+        self.relu = nn.ReLU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        original_shape = x.shape
+        batch_size = original_shape[0]
+        
+        num_features = np.prod(original_shape[1:])
+        
+        if num_features % 2 != 0:
+            raise ValueError(
+                f"The total number of features must be even, but got {num_features} "
+                f"for shape {original_shape}."
+            )
+
+        # Utiliser .reshape() pour gérer les tenseurs non-contigus
+        x_flat = x.reshape(batch_size, -1)
+
+        # --- Logique de tri ---
+        
+        # .reshape() est aussi plus sûr ici, par précaution
+        reshaped_x = x_flat.reshape(batch_size, -1, 2)
+        
+        x1s = reshaped_x[..., 0]
+        x2s = reshaped_x[..., 1]
+        
+        diff = x2s - x1s
+        relu_diff = self.relu(diff)
+        
+        y1 = x2s - relu_diff
+        y2 = x1s + relu_diff
+        
+        sorted_pairs = torch.stack((y1, y2), dim=2)
+        
+        # .reshape() est aussi plus sûr ici
+        sorted_flat = sorted_pairs.reshape(batch_size, -1)
+
+        # --- Fin de la logique ---
+
+        # Restaurer la forme originale en utilisant .reshape()
+        output = sorted_flat.reshape(original_shape)
+        
+        return output
+
 def load_cifar10(batch_size):
      # Initialize transforms
     train_transforms = v2.Compose([
@@ -228,76 +284,87 @@ def convert_lipschitz_constant(L_2, norm, input_dim):
         raise ValueError("input_dim must be a positive integer.")
 
     # Normalize the norm input for consistent checking
-    norm_str = str(norm).lower()
 
-    if norm_str == '2':
+    if norm == '2':
         # If the target norm is L2, no conversion is needed.
         return L_2
-    elif norm_str == 'inf':
+    elif norm == 'inf':
         # Convert L2 constant to an L-infinity constant upper bound.
         # The relationship is L_inf <= sqrt(input_dim) * L_2
-        L_inf = L_2 * torch.sqrt(input_dim)
+        L_inf = L_2 * np.sqrt(input_dim)
         return L_inf
     else:
         raise ValueError(f"Unsupported norm: '{norm}'. Please use '2' or 'inf'.")
-
-def add_result_and_sort(result_dict, csv_filepath, round_digits=3, norm=2):
+    
+def add_result_and_sort(result_dict, base_csv_filepath, round_digits=3, norm='2'):
     """
-    Adds a new result from a dictionary to a specified CSV file and rounds time values.
+    Adds a new result to a norm-specific CSV file and sorts it.
 
-    The function reads the existing CSV, adds the new result, sorts all entries
-    by the 'epsilon' value, and then overwrites the file with the sorted data.
+    The function constructs a filename based on the provided norm (e.g.,
+    'results_2.csv', 'results_inf.csv'), reads the existing data from that
+    specific file, adds the new result, sorts all entries by the 'epsilon'
+    value, and then overwrites the file.
 
     Args:
         result_dict (dict): A dictionary containing the new row of data.
-        csv_filepath (str): The full path to the CSV file to write to.
-        round_digits (int): The number of decimal places to round time values to.
+        base_csv_filepath (str): The base path for the CSV file. The norm will be
+                                 appended to this filename.
+        round_digits (int): The number of decimal places for rounding time values.
+        norm (int or str): The norm used for the result (e.g., 2 or 'inf').
     """
-    #TODO adapt to linf norm
-    # Get the directory part of the provided filepath
-    directory = os.path.dirname(csv_filepath)
+    # --- 1. Construct the norm-specific filename ---
+    name, ext = os.path.splitext(base_csv_filepath)
+    csv_filepath = f"{name}_norm_{norm}{ext}"
 
-    # Define the header order based on your dictionary keys
+    # --- 2. Prepare the data and header ---
+    # The header is now just the keys of the result dictionary.
     header = list(result_dict.keys())
 
-    # --- 1. Read all existing data from the CSV ---
-    all_data = []
-    # Create the directory if it doesn't exist (and if a directory is part of the path)
+    # --- 3. Read all existing data into a list of dictionaries ---
+    all_data_dicts = []
+    
+    directory = os.path.dirname(csv_filepath)
     if directory and not os.path.exists(directory):
         os.makedirs(directory)
-    
+
     if os.path.exists(csv_filepath) and os.path.getsize(csv_filepath) > 0:
-        with open(csv_filepath, 'r', newline='') as file:
-            reader = csv.reader(file)
-            file_header = next(reader)
-            try:
-                # Ensure the new data has the same columns as the existing file
-                if set(file_header) != set(header):
-                    print("⚠️  Warning: CSV header mismatch. Overwriting the file with new headers.")
+        try:
+            with open(csv_filepath, 'r', newline='') as file:
+                reader = csv.DictReader(file)
+                # Check for header consistency
+                if reader.fieldnames and set(reader.fieldnames) != set(header):
+                     print(f"⚠️  Warning: Header mismatch in '{csv_filepath}'. Overwriting with new data.")
                 else:
-                    for row in reader:
-                        all_data.append(row)
-            except (ValueError, IndexError):
-                print("⚠️  Could not parse existing file. Starting fresh.")
-    
-    # --- 2. Convert the new dictionary to a list and add it ---
-    new_row = [
-        round(value, round_digits) if isinstance(value, float) and key.startswith('time_') else value
-        for key, value in result_dict.items()
-    ]
-    all_data.append(new_row)
+                    all_data_dicts.extend(list(reader))
+        except Exception as e:
+            print(f"⚠️  Could not parse existing file '{csv_filepath}'. Starting fresh. Error: {e}")
 
-    # --- 3. Sort the data by the 'epsilon' column ---
-    epsilon_index = header.index('epsilon')
-    all_data.sort(key=lambda row: float(row[epsilon_index]))
+    # --- 4. Add the new result and apply rounding ---
+    processed_result = {}
+    for key, value in result_dict.items():
+        if str(key).startswith('time_') and isinstance(value, (float, int)):
+            processed_result[key] = round(value, round_digits)
+        else:
+            processed_result[key] = value
+    all_data_dicts.append(processed_result)
 
-    # --- 4. Write the sorted data back to the file ---
-    with open(csv_filepath, 'w', newline='') as file:
-        writer = csv.writer(file)
-        writer.writerow(header)
-        writer.writerows(all_data)
+    # --- 5. Sort the data by the 'epsilon' value ---
+    try:
+        all_data_dicts.sort(key=lambda row_dict: float(row_dict['epsilon']))
+    except (KeyError, ValueError) as e:
+        print(f"❌ Error: Could not sort. Ensure 'epsilon' exists and is a number. Error: {e}")
+        return 
 
-    print(f"✅ Successfully added result to '{csv_filepath}' for epsilon={result_dict['epsilon']}.")
+    # --- 6. Write the sorted data back to the file ---
+    try:
+        with open(csv_filepath, 'w', newline='') as file:
+            writer = csv.DictWriter(file, fieldnames=header)
+            writer.writeheader()
+            writer.writerows(all_data_dicts)
+        
+        print(f"✅ Successfully added result to '{csv_filepath}' for epsilon={result_dict['epsilon']}.")
+    except Exception as e:
+        print(f"❌ Error: Failed to write to CSV file '{csv_filepath}'. Error: {e}")
 
 
 import pandas as pd
@@ -398,7 +465,7 @@ def create_robustness_plot(filepath='results/results.csv', output_filename='robu
     plt.close()
 
 
-def compute_certificates_CRA(images, model, epsilon, correct_indices, norm=2, L=1):
+def compute_certificates_CRA(images, model, epsilon, correct_indices, norm='2', L=1):
     """
     Computes certificates, CRA, and the time taken for the core computation. Adapting to the norm.
 
@@ -408,6 +475,7 @@ def compute_certificates_CRA(images, model, epsilon, correct_indices, norm=2, L=
         - cra (float): The Certified Robust Accuracy percentage.
         - elapsed_time (float): The computation time in seconds.
     """
+    print(norm)
     correct_images = images[correct_indices]
     total_num_images = correct_images.shape[0]
 
@@ -435,12 +503,10 @@ def compute_certificates_CRA(images, model, epsilon, correct_indices, norm=2, L=
     elapsed_time = end_time - start_time
     # --- End of Timing ---
 
-    norm_str = str(norm).lower()
-
     # We adapt the computation of the certificate to the given norm
-    if norm_str == '2':
+    if norm == '2':
         scale_certificate = np.sqrt(2)
-    elif norm_str == 'inf':
+    elif norm == 'inf':
         scale_certificate = 2.0
     else:
         raise ValueError(f"Unsupported norm: '{norm}'. Please use '2' or 'inf'.")
@@ -451,7 +517,7 @@ def compute_certificates_CRA(images, model, epsilon, correct_indices, norm=2, L=
     cra = (num_robust_points / total_num_images) * 100.0
     return certificates.cpu(), cra, elapsed_time/len(correct_indices)
 
-def compute_pgd_era_and_time(images, targets, model, epsilon, clean_indices, norm=2):
+def compute_pgd_era_and_time(images, targets, model, epsilon, clean_indices, norm='2'):
     """
     Computes Empirical Robust Accuracy (CRA) against a PGD L2 attack and
     measures the mean computation time per image.
@@ -484,12 +550,11 @@ def compute_pgd_era_and_time(images, targets, model, epsilon, clean_indices, nor
         return 0.0, 0.0
 
     # --- Step 2: Set up and time the BATCH attack ---
-    norm_str = str(norm).lower()
 
     # We adapt the computation of the certificate to the given norm
-    if norm_str == '2':
+    if norm == '2':
         atk = torchattacks.PGDL2(model, eps=epsilon, alpha=epsilon/5, steps=int(10 * epsilon), random_start=True)
-    elif norm_str == 'inf':
+    elif norm == 'inf':
         atk = torchattacks.PGD(model, eps=epsilon, alpha=epsilon/5, steps=int(10 * epsilon), random_start=True)
     else:
         raise ValueError(f"Unsupported norm: '{norm}'. Please use '2' or 'inf'.")
@@ -527,7 +592,7 @@ def compute_pgd_era_and_time(images, targets, model, epsilon, clean_indices, nor
 
     return cra, mean_time_per_image
 
-def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indices, norm=2):
+def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indices, norm='2'):
     """
     Computes Empirical Robust Accuracy (CRA) against AutoAttack (L2) and
     measures the mean computation time per image.
@@ -554,9 +619,16 @@ def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indic
 
     if len(correct_images) == 0:
         return 0.0, 0.0
-    #TODO Implement linf attacks
+    
     # --- Step 2: Set up and time the BATCH attack ---
-    atk = torchattacks.AutoAttack(model, norm='L2', eps=epsilon)
+    # We adapt the computation of the certificate to the given norm
+    if norm == '2':
+        atk = torchattacks.AutoAttack(model, norm='L2', eps=epsilon)
+    elif norm == 'inf':
+        atk = torchattacks.AutoAttack(model, norm='Linf', eps=epsilon)
+    else:
+        raise ValueError(f"Unsupported norm: '{norm}'. Please use '2' or 'inf'.")
+    
     atk.set_normalization_used(mean = torch.tensor([0.4914, 0.4822, 0.4465]).view(3, 1, 1).cuda(), std = torch.tensor([0.225, 0.225, 0.225]).view(3, 1, 1).cuda())
 
     # Synchronize GPU before starting the timer
@@ -584,10 +656,13 @@ def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indic
 
     return cra, mean_time_per_image
 
-# sys.path.append('../SDP-CROWN-Share/auto_LiRPA')
+import sys
+sys.path.insert(0,'/home/aws_install/robustess_project/SDP-CROWN')
+import auto_LiRPA
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
 
+print(auto_LiRPA.__file__)
 
 def build_C(label, classes):
     """
@@ -627,7 +702,7 @@ def build_C(label, classes):
     
     return C
 
-def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indices, batch_size=1, norm=2):
+def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indices, batch_size=4, norm=2):
     """
     Computes Certified Robust Accuracy (CRA) using Alpha-Crown in batches to manage memory,
     and measures the mean verification time per image.
@@ -655,7 +730,6 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
     num_robust_points = 0
     total_time = 0.0
     num_batches = (len(correct_images) + batch_size - 1) // batch_size
-
     # --- Step 3: Set up a reusable BoundedModule ---
     # We only need to create this once
     dummy_input = correct_images[0:1].to(device)
@@ -671,9 +745,12 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
         
         batch_images = correct_images[start_idx:end_idx].to(device)
         batch_targets = correct_targets[start_idx:end_idx]
-
         # --- Set up BoundedTensor and specification for the current batch ---
-        ptb = PerturbationLpNorm(norm=norm, eps=epsilon)
+        if norm=='inf':
+            ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon)
+        else:
+            ptb = PerturbationLpNorm(norm=norm, eps=epsilon)
+
         bounded_input = BoundedTensor(batch_images, ptb)
         
         num_classes = model[-1].out_features # Assuming last layer is Linear
@@ -683,10 +760,8 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
         if device.type == 'cuda':
             torch.cuda.synchronize()
         start_time_batch = time.time()
-
-        bounded_model.set_bound_opts({'optimize_bound_args': {'iteration': 100, 'early_stop_patience': 20, 'fix_interm_bounds': False, 'enable_opt_interm_bounds':True, 'verbosity':False}, 'verbosity':False})
+        bounded_model.set_bound_opts({'optimize_bound_args': {'iteration': 200, 'early_stop_patience': 30, 'fix_interm_bounds': False, 'enable_opt_interm_bounds':True, 'verbosity':False}, 'verbosity':False})
         lb_diff = bounded_model.compute_bounds(x=(bounded_input,), C=c, method='alpha-crown')[0]
-
         if device.type == 'cuda':
             torch.cuda.synchronize()
         end_time_batch = time.time()
@@ -698,9 +773,9 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
         num_robust_points += torch.sum(is_robust).item()
 
         # Optional: Print progress
-        # print(f"  Batch {i+1}/{num_batches}: {torch.sum(is_robust).item()}/{len(batch_images)} robust.", end='\r')
+        print(f"  Batch {i+1}/{num_batches}: {torch.sum(is_robust).item()}/{len(batch_images)} robust.", end='\r')
 
-    # print("\nBatch verification finished.") 
+    print("\nBatch verification finished.") 
     
     # --- Step 5: Calculate final metrics ---
     # CRA is relative to the TOTAL dataset size
@@ -708,9 +783,6 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
     mean_time_per_image = total_time / len(correct_images) if len(correct_images) > 0 else 0.0
 
     return cra, mean_time_per_image
-
-#MAKE Imports
-
 
 
 import time
@@ -720,18 +792,18 @@ sys.path.append("/home/aws_install/robustess_project/alpha-beta-CROWN/complete_v
 from abcrown import ABCROWN # Import the main class from your script
 
 
-def compute_alphabeta_vra_and_time(dataset_name, model_name, model_path, epsilon, CONFIG_FILE, norm='inf'):
+def compute_alphabeta_vra_and_time(dataset_name, model_name, model_path, epsilon, CONFIG_FILE, clean_indices, norm='inf'):
     """
     Computes Certified Robust Accuracy (CRA) using α-β-CROWN and
     measures the mean verification time per image.
     """
-    print(epsilon)
-
+    #TODO apply to different dataset_names
     params = {
             'model': model_name,
             'load_model': model_path,  # Use 'load_model' for the path
             'dataset': 'CIFAR_SDP',
-            'epsilon': epsilon
+            'epsilon': epsilon,
+            # 'verbose': False
             # TODO link with norm:
         }
 
@@ -743,22 +815,40 @@ def compute_alphabeta_vra_and_time(dataset_name, model_name, model_path, epsilon
         )
     summary = verifier.main()
 
+    clean_indices_set = set(clean_indices)
+    clean_and_safe_count = 0
+    
+    results_list = summary.get('results_list', [])
+    for img_idx, status, time in results_list:
+        if img_idx in clean_indices_set and status == 'safe':
+            clean_and_safe_count += 1
+    
+    denominator = len(clean_indices)
+    certified_robust_accuracy = (clean_and_safe_count / denominator) * 100 if denominator > 0 else 0
 
+    print(f"🚀 Verification Complete!")
+    print(f"   - Total samples verified: 200")
+    print(f"   - Correctly classified (clean): {denominator}")
+    print(f"   - Correctly classified AND robust (clean & safe): {clean_and_safe_count}")
+    print(f"   - Certified Robust Accuracy: {certified_robust_accuracy:.2f}%")
+
+    import pdb; pdb.set_trace()
     # Extract results.
     total = summary.get('total', 0)
-    print(total)
+    print('total :', total)
     safe = summary.get('safe', 0)
     robust_accuracy = (safe / total) * 100 if total > 0 else 0
             
-    instance_times = [res[2] for res in verifier.logger.results]
+    instance_times = [res[2] for res in summary['results_list']]
     avg_time = sum(instance_times) / len(instance_times) if instance_times else 0
 
     return robust_accuracy, avg_time
 
 
 
-sys.path.append('/home/aws_install/robustess_project/SDP-CROWN-Share')
+sys.path.append('/home/aws_install/robustess_project/SDP-CROWN')
 from sdp_crown import verified_sdp_crown
+
 
 def compute_sdp_crown_vra(dataset, labels, model, radius, clean_output, device, classes, args):
     return verified_sdp_crown(dataset, labels, model, radius, clean_output, device, classes, args)

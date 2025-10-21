@@ -3,9 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import sys
 from deel import torchlip
-
-sys.path.append('/home/aws_install/robustess_project/lip_notebooks/AbstractInterpretation')
-from abstract_interpretation_tools import GroupSort_General, L2Pool2d, FlattenChannelLast, Square, Sqrt, SumPoolConv2d
+from project_utils import GroupSort_General
 
 # Note: This python file present every model we use for benchmarking. 
 # These models correspond to all the model architectures from Wang et al. (2021) & Leino et al. (2021)
