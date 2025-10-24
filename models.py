@@ -3,12 +3,67 @@ import torch.nn as nn
 import torch.nn.functional as F
 import sys
 from deel import torchlip
-from project_utils import GroupSort_General
+# from project_utils import GroupSort_General
+import numpy as np
 
 # Note: This python file present every model we use for benchmarking. 
 # These models correspond to all the model architectures from Wang et al. (2021) & Leino et al. (2021)
 # This version uses ReLU as the activation function.
+class GroupSort_General(nn.Module):
+    """
+    A universal, auto_lirpa-compatible PyTorch module that sorts pairs of features.
 
+    This module can handle inputs of any shape (e.g., 2D, 4D). It works by 
+    temporarily flattening the feature dimensions, applying the sort logic in a 
+    verifier-friendly way (with ReLU on a 2D tensor), and then reshaping the 
+    output back to the original input shape.
+
+    The total number of features (product of dimensions after the batch dim) must be even.
+    """
+    def __init__(self):
+        super(GroupSort_General, self).__init__()
+        self.relu = nn.ReLU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        original_shape = x.shape
+        batch_size = original_shape[0]
+        
+        num_features = np.prod(original_shape[1:])
+        
+        if num_features % 2 != 0:
+            raise ValueError(
+                f"The total number of features must be even, but got {num_features} "
+                f"for shape {original_shape}."
+            )
+
+        # Utiliser .reshape() pour gérer les tenseurs non-contigus
+        x_flat = x.reshape(batch_size, -1)
+
+        # --- Logique de tri ---
+        
+        # .reshape() est aussi plus sûr ici, par précaution
+        reshaped_x = x_flat.reshape(batch_size, -1, 2)
+        
+        x1s = reshaped_x[..., 0]
+        x2s = reshaped_x[..., 1]
+        
+        diff = x2s - x1s
+        relu_diff = self.relu(diff)
+        
+        y1 = x2s - relu_diff
+        y2 = x1s + relu_diff
+        
+        sorted_pairs = torch.stack((y1, y2), dim=2)
+        
+        # .reshape() est aussi plus sûr ici
+        sorted_flat = sorted_pairs.reshape(batch_size, -1)
+
+        # --- Fin de la logique ---
+
+        # Restaurer la forme originale en utilisant .reshape()
+        output = sorted_flat.reshape(original_shape)
+        
+        return output
 def MNIST_MLP():
 	model = nn.Sequential(
 		nn.Flatten(),

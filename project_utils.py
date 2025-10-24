@@ -20,62 +20,6 @@ import os
 import copy
 from torch.nn.utils.parametrize import is_parametrized
 
-class GroupSort_General(nn.Module):
-    """
-    A universal, auto_lirpa-compatible PyTorch module that sorts pairs of features.
-
-    This module can handle inputs of any shape (e.g., 2D, 4D). It works by 
-    temporarily flattening the feature dimensions, applying the sort logic in a 
-    verifier-friendly way (with ReLU on a 2D tensor), and then reshaping the 
-    output back to the original input shape.
-
-    The total number of features (product of dimensions after the batch dim) must be even.
-    """
-    def __init__(self):
-        super(GroupSort_General, self).__init__()
-        self.relu = nn.ReLU()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        original_shape = x.shape
-        batch_size = original_shape[0]
-        
-        num_features = np.prod(original_shape[1:])
-        
-        if num_features % 2 != 0:
-            raise ValueError(
-                f"The total number of features must be even, but got {num_features} "
-                f"for shape {original_shape}."
-            )
-
-        # Utiliser .reshape() pour gérer les tenseurs non-contigus
-        x_flat = x.reshape(batch_size, -1)
-
-        # --- Logique de tri ---
-        
-        # .reshape() est aussi plus sûr ici, par précaution
-        reshaped_x = x_flat.reshape(batch_size, -1, 2)
-        
-        x1s = reshaped_x[..., 0]
-        x2s = reshaped_x[..., 1]
-        
-        diff = x2s - x1s
-        relu_diff = self.relu(diff)
-        
-        y1 = x2s - relu_diff
-        y2 = x1s + relu_diff
-        
-        sorted_pairs = torch.stack((y1, y2), dim=2)
-        
-        # .reshape() est aussi plus sûr ici
-        sorted_flat = sorted_pairs.reshape(batch_size, -1)
-
-        # --- Fin de la logique ---
-
-        # Restaurer la forme originale en utilisant .reshape()
-        output = sorted_flat.reshape(original_shape)
-        
-        return output
-
 def load_cifar10(batch_size):
      # Initialize transforms
     train_transforms = v2.Compose([
@@ -650,12 +594,24 @@ def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indic
     with torch.no_grad():
         adv_outputs = model(adv_images)
         adv_predictions = adv_outputs.argmax(dim=1)
-        num_robust_points = torch.sum(adv_predictions == correct_targets).item()
-    # CRA is relative to the TOTAL dataset size
-    cra = (num_robust_points / total_num_images) * 100.0
-
+        robust_mask = (adv_predictions == correct_targets)
+        num_robust_points = torch.sum(robust_mask).item()
+        non_robust_mask = ~robust_mask  # or (adv_predictions != correct_targets)
+        
+        # Get the indices of the non-robust points within the current batch
+        non_robust_indices = torch.nonzero(non_robust_mask, as_tuple=True)[0]
+        
+        # Print the list of indices
+        if non_robust_indices.numel() > 0:
+            print(f"Indices of non-robust images in this batch: {non_robust_indices.tolist()}")
+        # CRA is relative to the TOTAL dataset size
+        cra = (num_robust_points / total_num_images) * 100.0
+#[7, 34, 39, 40, 47, 66, 67, 77, 80, 95, 114, 126]
     return cra, mean_time_per_image
-
+# 7 34 39 40 66 80 95 114 126
+#safe-incomplete (total 118), index: [0, 1, 2, 7, 8, 13, 14, 17, 18, 20, 21, 22, 24, 27, 28, 30, 31, 32, 33, 34, 37, 38, 39, 40, 41, 42, 47, 48, 49, 51, 52, 54, 55, 59, 60, 62, 64, 66, 68, 69, 70, 71, 73, 74, 79, 80, 81, 82, 83, 84, 85, 86, 87, 89, 91, 93, 95, 98, 99, 101, 103, 104, 108, 109, 110, 111, 112, 114, 115, 116, 117, 118, 121, 122, 126, 131, 133, 135, 136, 137, 139, 140, 142, 144, 145, 146, 148, 153, 154, 157, 158, 159, 160, 161, 164, 166, 167, 168, 171, 172, 174, 175, 177, 179, 180, 181, 182, 183, 186, 187, 188, 189, 190, 192, 194, 195, 197, 199]
+# unsafe-pgd (total 81), index: [3, 4, 5, 6, 9, 10, 11, 12, 15, 16, 19, 23, 25, 26, 29, 35, 36, 43, 44, 45, 46, 50, 53, 56, 57, 61, 63, 65, 67, 72, 75, 76, 77, 78, 88, 90, 92, 94, 96, 97, 100, 102, 105, 106, 107, 113, 119, 120, 123, 124, 125, 127, 128, 129, 130, 132, 134, 138, 141, 143, 147, 149, 150, 151, 152, 155, 156, 162, 163, 165, 169, 170, 173, 176, 178, 184, 185, 191, 193, 196, 198]
+# safe (total 1), index: [58]
 import sys
 sys.path.insert(0,'/home/aws_install/robustess_project/SDP-CROWN')
 import auto_LiRPA
@@ -792,19 +748,21 @@ sys.path.append("/home/aws_install/robustess_project/alpha-beta-CROWN/complete_v
 from abcrown import ABCROWN # Import the main class from your script
 
 
+import time  # Import the time module
+
 def compute_alphabeta_vra_and_time(dataset_name, model_name, model_path, epsilon, CONFIG_FILE, clean_indices, norm='inf'):
     """
     Computes Certified Robust Accuracy (CRA) using α-β-CROWN and
     measures the mean verification time per image.
     """
     #TODO apply to different dataset_names
+    model_path = model_path.replace('models/', 'models/vanilla_')
+    print(model_path)
     params = {
             'model': model_name,
             'load_model': model_path,  # Use 'load_model' for the path
             'dataset': 'CIFAR_SDP',
             'epsilon': epsilon,
-            # 'verbose': False
-            # TODO link with norm:
         }
 
     # Compute the lower bounds on the logit differences using α-β-CROWN
@@ -813,37 +771,53 @@ def compute_alphabeta_vra_and_time(dataset_name, model_name, model_path, epsilon
             config=CONFIG_FILE,
             **params
         )
+    
+    # --- Start Timing ---
+    start_time = time.time()
+    
     summary = verifier.main()
+    
+    end_time = time.time()
+    # --- End Timing ---
 
-    clean_indices_set = set(clean_indices)
-    clean_and_safe_count = 0
+
+    # --- Calculate Total Samples Verified ---
+    # This is more robust than hardcoding 200
+    total_samples_verified = sum(len(v) for v in summary.values())
+
+    # --- Calculate Average Time ---
+    total_time = end_time - start_time
+    avg_time = total_time / total_samples_verified if total_samples_verified > 0 else 0
+
+
+    # --- Accuracy Calculations ---
+    clean_indices_set = {t.item() for t in clean_indices}
+    validated_indices_set = set()
+    validated_keys = ['safe-incomplete', 'safe']
     
-    results_list = summary.get('results_list', [])
-    for img_idx, status, time in results_list:
-        if img_idx in clean_indices_set and status == 'safe':
-            clean_and_safe_count += 1
-    
+    # Note: 'total_validated' here means "total proven safe", not "total processed"
+    total_proven_safe = 0 
+
+    for key in validated_keys:
+        validated_indices_set.update(summary.get(key, []))
+        total_proven_safe += len(summary.get(key, [])) # .get() is safer if a key might be missing
+
+    validated_clean_indices = validated_indices_set.intersection(clean_indices_set)
+    count_validated_clean = len(validated_clean_indices)
+
     denominator = len(clean_indices)
-    certified_robust_accuracy = (clean_and_safe_count / denominator) * 100 if denominator > 0 else 0
+    certified_robust_accuracy = (count_validated_clean / denominator) * 100 if denominator > 0 else 0
 
     print(f"🚀 Verification Complete!")
-    print(f"   - Total samples verified: 200")
+    print(f"   - Total samples verified: {total_samples_verified}")
     print(f"   - Correctly classified (clean): {denominator}")
-    print(f"   - Correctly classified AND robust (clean & safe): {clean_and_safe_count}")
+    print(f"   - Correctly classified AND robust (clean & safe): {count_validated_clean}")
     print(f"   - Certified Robust Accuracy: {certified_robust_accuracy:.2f}%")
+    print(f"   - Total verification time: {total_time:.2f} seconds")
+    print(f"   - Average time per sample: {avg_time:.4f} seconds")
+    # import pdb; pdb.set_trace()
 
-    import pdb; pdb.set_trace()
-    # Extract results.
-    total = summary.get('total', 0)
-    print('total :', total)
-    safe = summary.get('safe', 0)
-    robust_accuracy = (safe / total) * 100 if total > 0 else 0
-            
-    instance_times = [res[2] for res in summary['results_list']]
-    avg_time = sum(instance_times) / len(instance_times) if instance_times else 0
-
-    return robust_accuracy, avg_time
-
+    return certified_robust_accuracy, avg_time
 
 
 sys.path.append('/home/aws_install/robustess_project/SDP-CROWN')

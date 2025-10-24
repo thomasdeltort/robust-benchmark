@@ -123,8 +123,8 @@ def main():
     print(f"Using device: {device}")
     # Load the benchmark dataset and the pre-trained model
     images, targets, epsilon_rescaled, classes = load_dataset_benchmark(args)
-    images = images[:50]
-    targets = targets[:50]
+    # images = images[:20]
+    # targets = targets[:20]
     model = load_model(args, model_zoo, device)
     model.eval() # Set the model to evaluation mode
     # --- 3. Calculate Clean Accuracy (Baseline) ---
@@ -167,12 +167,12 @@ def main():
     lirpa_alpha_vra, time_lirpa_alpha = compute_alphacrown_vra_and_time(images, targets, model, epsilon_rescaled, clean_indices, norm = args.norm)
     print(f"  - Certified Robustness (LIRPA α-CROWN): {lirpa_alpha_vra:.2f}% | Time: {time_lirpa_alpha:.4f}s")
     # lirpa_alpha_vra, time_lirpa_alpha = 0, 0
-    #FIXME import utils in both libs so we may have to move the imports in the if 
     if norm =='inf':
         #FIXME epsilon_rescaled or args.epsilon ?
-        # lirpa_beta_vra, time_lirpa_beta = compute_alphabeta_vra_and_time(args.dataset, args.model, args.model_path, epsilon_rescaled, "cifar_l2_norm.yaml", clean_indices)
-        # print(f"  - Certified Robustness (LIRPA β-CROWN): {lirpa_beta_vra:.2f}% | Time: {time_lirpa_beta:.4f}s")
-        lirpa_beta_vra, time_lirpa_beta = 0, 0
+        # import pdb; pdb.set_trace()
+        lirpa_beta_vra, time_lirpa_beta = compute_alphabeta_vra_and_time(args.dataset, args.model, args.model_path, args.epsilon, "cifar_l2_norm.yaml", clean_indices)
+        print(f"  - Certified Robustness (LIRPA β-CROWN): {lirpa_beta_vra:.2f}% | Time: {time_lirpa_beta:.4f}s")
+        # lirpa_beta_vra, time_lirpa_beta = 0, 0
         sdp_crown_vra, time_sdp = 0, 0
     elif norm == '2':
         sdp_crown_vra, time_sdp = compute_sdp_crown_vra(images, targets, model, epsilon_rescaled, clean_indices, device, classes, args)
@@ -197,22 +197,7 @@ def main():
     }
     
     add_result_and_sort(result_dict, args.output_csv, norm=args.norm)
-    # Save results to a Pickle file if a path is provided.
-
-    # if args.output_pkl:
-    #     base, ext = os.path.splitext(args.output_pkl)
-    #     epsilon_str = str(args.epsilon).replace('.', '_')
-    #     # Create a unique filename to avoid overwriting results from different epsilon values
-    #     new_pkl_path = f"{base}_epsilon_{epsilon_str}{ext}"
-        
-    #     try:
-    #         with open(new_pkl_path, 'wb') as pkl_file:
-    #             # We save the dictionary directly in a list
-    #             pickle.dump([result_dict], pkl_file)
-    #         print(f"✅ Results also saved to Pickle file: {new_pkl_path}")
-    #     except IOError as e:
-    #         print(f"Error: Could not write to Pickle file {new_pkl_path}. Reason: {e}")
-
+   
 
 if __name__ == '__main__':
     main()

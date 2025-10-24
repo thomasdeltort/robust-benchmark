@@ -158,7 +158,7 @@ def main(args):
 
     print(f"\nSaving model to: {save_path_full}")
     torch.save(model.state_dict(), save_path_full)
-    
+    #FIXME wrong vanilla_export
     print(f"Saving vanilla model to: {save_path_vanilla}")
     torch.save(model.vanilla_export().state_dict(), save_path_vanilla)
 

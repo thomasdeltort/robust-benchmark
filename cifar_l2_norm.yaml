@@ -11,15 +11,16 @@ data:
   start: 0  # First example to verify in dataset.
   end: 200 # Last example to verify in dataset.
 specification:
+  # type: lp
   norm: .inf  # Linf norm (can also be 2 or 1).
-  epsilon: 0.1411764705882353  # epsilon=36./255.
+  # epsilon: 0.1411764705882353  # epsilon=36./255.
 attack:  # Currently attack is only implemented for Linf norm. Skip for L2 norm.
   # pgd_order: skip
   pgd_restarts: 10
 solver:
   batch_size: 1024  # Number of subdomains to compute in parallel in bound solver. Decrease if you run out of memory.
   alpha-crown:
-    iteration: 50   # Number of iterations for alpha-CROWN optimization. Alpha-CROWN is used to compute all intermediate layer bounds before branch and bound starts.
+    iteration: 200   # Number of iterations for alpha-CROWN optimization. Alpha-CROWN is used to compute all intermediate layer bounds before branch and bound starts.
     lr_alpha: 0.1    # Learning rate for alpha in alpha-CROWN. The default (0.1) is typically ok.
   beta-crown:
     lr_alpha: 0.01  # Learning rate for optimizing the alpha parameters, the default (0.01) is typically ok, but you can try to tune this parameter to get better lower bound.
