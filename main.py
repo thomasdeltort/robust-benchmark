@@ -147,6 +147,10 @@ def main():
     print(f"Perturbation budget (epsilon): {args.epsilon} (rescaled to {epsilon_rescaled:.4f} for normalized data)")
     print(f"Evaluating robustness on {len(clean_indices)} correctly classified samples.")
 
+    #REMOVE
+    # clean_indices = (predictions == predictions).nonzero(as_tuple=True)[0]
+
+
     # --- 4. Run Robustness Evaluations with Timing ---
     print("\nStarting robustness evaluations...")
 
@@ -195,6 +199,7 @@ def main():
         'time_lirpa_beta': time_lirpa_beta,
         'time_sdp': time_sdp,
     }
+    # import pdb;pdb.set_trace()
     
     add_result_and_sort(result_dict, args.output_csv, norm=args.norm)
    

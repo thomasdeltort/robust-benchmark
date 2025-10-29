@@ -109,7 +109,7 @@ def preprocess_cifar(image, inception_preprocess=False, perturbation=False):
     """
     Preprocess images and perturbations.Preprocessing used by the SDP paper.
     """
-    MEANS = np.array([125.3, 123.0, 113.9], dtype=np.float32)/255
+    MEANS = np.array([0.4914, 0.4822, 0.4465], dtype=np.float32)
     STD = np.array([0.225, 0.225, 0.225], dtype=np.float32)
     if inception_preprocess:
         # Use 2x - 1 to get [-1, 1]-scaled images
@@ -480,6 +480,7 @@ def compute_pgd_era_and_time(images, targets, model, epsilon, clean_indices, nor
         - mean_time_per_image (float): The average attack time per image in seconds.
     """
     device = next(model.parameters()).device
+    total_num_images = len(clean_indices) 
 
     # --- Step 1: Filter the dataset to only attack clean images ---
     # We only care about robustness for images the model gets right to begin with.
@@ -487,7 +488,7 @@ def compute_pgd_era_and_time(images, targets, model, epsilon, clean_indices, nor
     correct_images = images[clean_indices].contiguous().to(device)
     correct_targets = targets[clean_indices].to(device)
 
-    total_num_images = len(clean_indices) #FIXME
+    
 
     if len(correct_images) == 0:
         # If no images were correct, robust accuracy is 0 and time is 0.
@@ -497,9 +498,9 @@ def compute_pgd_era_and_time(images, targets, model, epsilon, clean_indices, nor
 
     # We adapt the computation of the certificate to the given norm
     if norm == '2':
-        atk = torchattacks.PGDL2(model, eps=epsilon, alpha=epsilon/5, steps=int(10 * epsilon), random_start=True)
+        atk = torchattacks.PGDL2(model, eps=epsilon, alpha=epsilon/5, steps=int(10 * epsilon))
     elif norm == 'inf':
-        atk = torchattacks.PGD(model, eps=epsilon, alpha=epsilon/5, steps=int(10 * epsilon), random_start=True)
+        atk = torchattacks.PGD(model, eps=epsilon, alpha=epsilon/5, steps=int(10 * epsilon))
     else:
         raise ValueError(f"Unsupported norm: '{norm}'. Please use '2' or 'inf'.")
     
@@ -555,7 +556,7 @@ def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indic
         - mean_time_per_image (float): The average attack time per image in seconds.
     """
     device = next(model.parameters()).device
-    total_num_images = len(clean_indices) #FIXME
+    total_num_images = len(clean_indices) 
 
     # --- Step 1: Filter the dataset ---
     correct_images = images[clean_indices].contiguous().to(device)
@@ -756,8 +757,8 @@ def compute_alphabeta_vra_and_time(dataset_name, model_name, model_path, epsilon
     measures the mean verification time per image.
     """
     #TODO apply to different dataset_names
-    model_path = model_path.replace('models/', 'models/vanilla_')
-    print(model_path)
+    # model_path = model_path.replace('models/', 'models/vanilla_')
+    # print(model_path)
     params = {
             'model': model_name,
             'load_model': model_path,  # Use 'load_model' for the path
@@ -826,87 +827,3 @@ from sdp_crown import verified_sdp_crown
 
 def compute_sdp_crown_vra(dataset, labels, model, radius, clean_output, device, classes, args):
     return verified_sdp_crown(dataset, labels, model, radius, clean_output, device, classes, args)
-
-def evaluate(args):
-    """
-    Main function to evaluate a pre-trained model on a given dataset.
-    """
-    if not os.path.exists(args.model_path):
-        print(f"Error: Model file not found at '{args.model_path}'")
-        return
-
-    print("--- Evaluation Setup ---")
-    print(f"Model Path: {args.model_path}")
-    print(f"Model Name: {args.model_name}")
-    print(f"Dataset: {args.dataset}")
-    print(f"Batch Size: {args.batch_size}")
-    print("------------------------")
-
-    # --- 1. Setup Device ---
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}\n")
-
-    # --- 2. Load Dataset ---
-    # We only need the test_loader for evaluation.
-    try:
-        _, test_loader = load_dataset(args.dataset, args.batch_size)
-    except NotImplementedError as e:
-        print(f"Error: {e}")
-        return
-        
-    num_classes = 10  # Assuming 10 classes for both CIFAR-10 and MNIST
-
-    # --- 3. Initialize Model ---
-    model_zoo = {
-        "MLP_MNIST": MLP_MNIST,
-        "ConvSmall_MNIST": ConvSmall_MNIST,
-        "ConvLarge_MNIST": ConvLarge_MNIST,
-        "CNNA_CIFAR10": CNNA_CIFAR10,
-        "CNNB_CIFAR10": CNNB_CIFAR10,
-        "CNNC_CIFAR10": CNNB_CIFAR10, # Note: CNNC uses CNNB class in training script
-        "ConvSmall_CIFAR10": ConvSmall_CIFAR10,
-        "ConvDeep_CIFAR10": ConvDeep_CIFAR10,
-        "ConvLarge_CIFAR10": ConvLarge_CIFAR10,
-    }
-
-    if args.model_name not in model_zoo:
-        raise ValueError(f"Model '{args.model_name}' not found. Available models are: {list(model_zoo.keys())}")
-    
-    ModelClass = model_zoo[args.model_name]
-    model = ModelClass().vanilla_export()
-    
-    # Load the saved state dictionary
-    model.load_state_dict(torch.load(args.model_path, map_location=device))
-    model.to(device)
-    model.eval() # Set model to evaluation mode
-
-    # --- 4. Setup Loss Functions for Metrics ---
-    # Use dummy parameters for the custom loss, as they don't affect metric calculation.
-    criterion = HKRMultiLossLSE(alpha=250, temperature=200.0, penalty=0.5, margin=1.0)
-    kr_multiclass_loss = torchlip.KRMulticlassLoss()
-
-    # --- 5. Evaluation Loop ---
-    print("Starting evaluation...")
-    test_output, test_targets = [], []
-    with torch.no_grad(): # Disable gradient calculations
-        for data, target in test_loader:
-            data = data.to(device)
-            # Store outputs and targets on CPU to save GPU memory
-            test_output.append(model(data).cpu())
-            test_targets.append(torch.nn.functional.one_hot(target, num_classes=num_classes).cpu())
-    
-    # Concatenate all batches
-    test_output = torch.cat(test_output)
-    test_targets = torch.cat(test_targets)
-
-    # --- 6. Calculate and Print Final Metrics ---
-    accuracy = (test_output.argmax(dim=1) == test_targets.argmax(dim=1)).float().mean().item()
-    hkr_loss = criterion(test_output, test_targets).item()
-    kr_loss = kr_multiclass_loss(test_output, test_targets).item()
-
-    print("\n--- Evaluation Results ---")
-    print(f"Accuracy: {accuracy * 100:.2f}%")
-    print(f"HKR Loss: {hkr_loss:.4f}")
-    print(f"KR Loss:  {kr_loss:.4f}")
-    print("--------------------------")
-
