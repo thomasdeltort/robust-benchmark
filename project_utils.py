@@ -315,6 +315,111 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import os # Imported to check file name
+
+def create_robustness_plot_v2(filepath='results/results.csv', output_filename='robust_accuracy_vs_epsilon_colored.png'):
+    """
+    Generates a plot of robust accuracy vs. epsilon with a custom, distinct color palette.
+
+    - 'certificate' is blue (distinct).
+    - 'aa' is orangish.
+    - 'pgd' is NOT plotted.
+    - 'sdp' is NOT plotted if 'Linf' is in the filepath.
+    - 'lirpa_betacrown' is NOT plotted if 'L2' is in the filepath.
+    """
+    try:
+        df = pd.read_csv(filepath)
+    except FileNotFoundError:
+        print(f"❌ Error: The file '{filepath}' was not found.")
+        return
+
+    # Prepare data
+    df = df.sort_values(by='epsilon').reset_index(drop=True)
+    
+    # --- ✨ MODIFIED: 'pgd' removed from the base plot order ---
+    plot_order = ['certificate', 'aa', 'lirpa_alphacrown', 'lirpa_betacrown', 'sdp']
+    
+    # --- ✨ NEW: Conditional Filtering based on filename ---
+    # Start with the base list of methods to consider
+    methods_to_plot = list(plot_order) 
+
+    # Conditionally remove methods based on the filepath
+    # We use os.path.basename to just check the filename, not the whole path
+    filename_only = os.path.basename(filepath)
+    
+    if 'Linf' in filename_only:
+        if 'sdp' in methods_to_plot:
+            methods_to_plot.remove('sdp')
+            print("ℹ️ 'Linf' found in filename. Removing 'sdp' from the plot.")
+    elif 'L2' in filename_only:
+        if 'lirpa_betacrown' in methods_to_plot:
+            methods_to_plot.remove('lirpa_betacrown')
+            print("ℹ️ 'L2' found in filename. Removing 'lirpa_betacrown' from the plot.")
+            
+    # Filter to only include columns that are in our conditional list AND are actually in the DataFrame
+    method_columns = [col for col in methods_to_plot if col in df.columns and col != 'epsilon' and not col.startswith('time_')]
+
+    # --- ✨ MODIFIED: Custom Color Mapping (removed 'pgd') ---
+    color_map = {}
+    
+    # 1. Assign a distinct color to 'certificate'
+    if 'certificate' in method_columns:
+        color_map['certificate'] = '#1f77b4'  # A standard Matplotlib blue
+
+    # 2. Assign orangish color to 'aa'
+    if 'aa' in method_columns:
+        color_map['aa'] = '#ff7f0e'   # Matplotlib orange
+
+    # 3. Assign distinct colors for the remaining methods
+    other_methods_colors = [
+        '#9467bd', # tab10 purple
+        '#8c564b', # tab10 brown
+        '#e377c2'  # tab10 pink
+    ]
+    other_idx = 0
+    for method in method_columns:
+        if method not in color_map:
+            if other_idx < len(other_methods_colors):
+                color_map[method] = other_methods_colors[other_idx]
+                other_idx += 1
+            else:
+                # Fallback color if we run out
+                color_map[method] = '#7f7f7f' # tab10 grey
+
+
+    # Create the plot
+    sns.set_theme(style="whitegrid")
+    plt.figure(figsize=(12, 8))
+
+    for method in method_columns:
+        # Use the color assigned to each method in our new map
+        plt.plot(df['epsilon'], df[method], 
+                 marker='o', 
+                 linestyle='-', 
+                 label=method, 
+                 color=color_map.get(method, '#000000'), # Use .get for safety
+                 linewidth=2)
+
+    # Style the plot
+    plt.title('Robust Accuracy vs. Epsilon for Various Methods', fontsize=16, weight='bold')
+    plt.xlabel('Epsilon ($ε$)', fontsize=14)
+    plt.ylabel('Robust Accuracy', fontsize=14)
+    plt.legend(title='Verification Method', fontsize=10)
+    plt.grid(True, which='both', linestyle='--', linewidth=0.5)
+    plt.tight_layout()
+    
+    # Save the plot
+    plt.savefig(output_filename)
+    print(f"✅ Plot successfully saved as '{output_filename}' with specified methods.")
+    plt.close()
+
+# --- Example Usage ---
+# create_robustness_plot(filepath='results/Linf_results.csv', output_filename='Linf_plot.png')
+# create_robustness_plot(filepath='results/L2_data.csv', output_filename='L2_plot.png')
+# create_robustness_plot(filepath='results/other_results.csv', output_filename='other_plot.png')
 
 def create_robustness_plot(filepath='results/results.csv', output_filename='robust_accuracy_vs_epsilon_colored.png'):
     """
@@ -461,7 +566,7 @@ def compute_certificates_CRA(images, model, epsilon, correct_indices, norm='2', 
     cra = (num_robust_points / total_num_images) * 100.0
     return certificates.cpu(), cra, elapsed_time/len(correct_indices)
 
-def compute_pgd_era_and_time(images, targets, model, epsilon, clean_indices, norm='2'):
+def compute_pgd_era_and_time(images, targets, model, epsilon, clean_indices, norm='2', dataset_name='cifar10'):
     """
     Computes Empirical Robust Accuracy (CRA) against a PGD L2 attack and
     measures the mean computation time per image.
@@ -505,7 +610,8 @@ def compute_pgd_era_and_time(images, targets, model, epsilon, clean_indices, nor
         raise ValueError(f"Unsupported norm: '{norm}'. Please use '2' or 'inf'.")
     
     # atk = torchattacks.PGDL2(model, eps=epsilon, alpha=epsilon, steps=1, random_start=True)
-    atk.set_normalization_used(mean = torch.tensor([0.4914, 0.4822, 0.4465]).view(3, 1, 1).cuda(), std = torch.tensor([0.225, 0.225, 0.225]).view(3, 1, 1).cuda())
+    if dataset_name=="cifar10":
+        atk.set_normalization_used(mean = torch.tensor([0.4914, 0.4822, 0.4465]).view(3, 1, 1).cuda(), std = torch.tensor([0.225, 0.225, 0.225]).view(3, 1, 1).cuda())
 
     # Synchronize GPU before starting the timer for accurate measurement
     if device.type == 'cuda':
@@ -537,7 +643,7 @@ def compute_pgd_era_and_time(images, targets, model, epsilon, clean_indices, nor
 
     return cra, mean_time_per_image
 
-def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indices, norm='2'):
+def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indices, norm='2', dataset_name='cifar10'):
     """
     Computes Empirical Robust Accuracy (CRA) against AutoAttack (L2) and
     measures the mean computation time per image.
@@ -574,7 +680,8 @@ def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indic
     else:
         raise ValueError(f"Unsupported norm: '{norm}'. Please use '2' or 'inf'.")
     
-    atk.set_normalization_used(mean = torch.tensor([0.4914, 0.4822, 0.4465]).view(3, 1, 1).cuda(), std = torch.tensor([0.225, 0.225, 0.225]).view(3, 1, 1).cuda())
+    if dataset_name=="cifar10":
+        atk.set_normalization_used(mean = torch.tensor([0.4914, 0.4822, 0.4465]).view(3, 1, 1).cuda(), std = torch.tensor([0.225, 0.225, 0.225]).view(3, 1, 1).cuda())
 
     # Synchronize GPU before starting the timer
     if device.type == 'cuda':
@@ -659,7 +766,7 @@ def build_C(label, classes):
     
     return C
 
-def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indices, batch_size=4, norm=2):
+def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indices, batch_size=2, norm=2):
     """
     Computes Certified Robust Accuracy (CRA) using Alpha-Crown in batches to manage memory,
     and measures the mean verification time per image.
@@ -751,6 +858,9 @@ from abcrown import ABCROWN # Import the main class from your script
 
 import time  # Import the time module
 
+import logging
+logging.getLogger('auto_LiRPA').setLevel(logging.WARNING)
+
 def compute_alphabeta_vra_and_time(dataset_name, model_name, model_path, epsilon, CONFIG_FILE, clean_indices, norm='inf'):
     """
     Computes Certified Robust Accuracy (CRA) using α-β-CROWN and
@@ -759,10 +869,17 @@ def compute_alphabeta_vra_and_time(dataset_name, model_name, model_path, epsilon
     #TODO apply to different dataset_names
     # model_path = model_path.replace('models/', 'models/vanilla_')
     # print(model_path)
+    if dataset_name=='cifar10':
+        dataset = 'CIFAR_SDP'
+    elif dataset_name=='mnist':
+        dataset = 'MNIST_SDP'
+    else :
+        raise ValueError(f"Unsupported dataset")
+    
     params = {
             'model': model_name,
             'load_model': model_path,  # Use 'load_model' for the path
-            'dataset': 'CIFAR_SDP',
+            'dataset': dataset,
             'epsilon': epsilon,
         }
 

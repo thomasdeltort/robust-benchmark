@@ -64,6 +64,69 @@ class GroupSort_General(nn.Module):
         output = sorted_flat.reshape(original_shape)
         
         return output
+    
+class MaxMin(nn.Module):
+    """
+    Computes min/max using torch.split.
+    
+    WARNING: This will still cause the broadcasting RuntimeError
+    in auto_LiRPA when batch size > 1.
+    """
+    def forward(self, x):
+        original_shape = x.shape
+        batch_size = original_shape[0]
+        num_features = np.prod(original_shape[1:])
+        
+        if num_features % 2 != 0: 
+            raise ValueError("Total features must be even.")
+            
+        x_flat = x.reshape(batch_size, -1)
+        x_pairs = x_flat.reshape(batch_size, -1, 2)
+        
+        # --- Using torch.split ---
+        # x_pairs has shape [batch_size, num_pairs, 2]
+        # This splits along dim=-1 into two tensors of size 1
+        a_tensor, b_tensor = torch.split(x_pairs, 1, dim=-1)
+        
+        # Squeeze the last dim to get shape [batch_size, num_pairs]
+        a = a_tensor.squeeze(-1)
+        b = b_tensor.squeeze(-1)
+        
+        # --- This is the part that causes the error ---
+        # These operations trigger the buggy handler in auto_LiRPA
+        min_vals = -torch.max(-a, -b)
+        max_vals = torch.max(a, b)
+        
+        # --- End of problematic part ---
+        
+        sorted_pairs = torch.stack((min_vals, max_vals), dim=-1)
+        sorted_flat = sorted_pairs.reshape(batch_size, -1)
+        return sorted_flat.reshape(original_shape)
+    
+def ConvLarge_MNIST_1_LIP_GNP_MaxMin():
+    """
+    Model: ConvLarge_1_LIP_GNP (MNIST)
+    Structure: Conv(1, 32, 3, 1, 1) -> ReLU -> Conv(32, 32, 4, 2, 1) -> ReLU -> Conv(32, 64, 3, 1, 1) -> ReLU ->
+               Conv(64, 64, 4, 2, 1) -> ReLU -> Linear(3136, 512) -> ReLU -> Linear(512, 512) -> ReLU -> Linear(512, 10)
+    """
+    model = torchlip.Sequential(
+        AdaptiveOrthoConv2d(in_channels=1, out_channels=32, kernel_size=3, stride=1, padding=1, padding_mode='zeros',ortho_params=DEFAULT_ORTHO_PARAMS),
+        MaxMin(),
+        AdaptiveOrthoConv2d(in_channels=32, out_channels=32, kernel_size=4, stride=2, padding=1, padding_mode='zeros',ortho_params=DEFAULT_ORTHO_PARAMS),
+        MaxMin(),
+        AdaptiveOrthoConv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1, padding_mode='zeros',ortho_params=DEFAULT_ORTHO_PARAMS),
+        MaxMin(),
+        AdaptiveOrthoConv2d(in_channels=64, out_channels=64, kernel_size=4, stride=2, padding=1, padding_mode='zeros',ortho_params=DEFAULT_ORTHO_PARAMS),
+        MaxMin(),
+        nn.Flatten(),
+        torchlip.SpectralLinear(64 * 7 * 7, 512), # 3136 input features
+        MaxMin(),
+        torchlip.SpectralLinear(512, 512),
+        MaxMin(),
+        torchlip.SpectralLinear(512, 10)
+    )
+    return model
+
 def MNIST_MLP():
 	model = nn.Sequential(
 		nn.Flatten(),
@@ -609,6 +672,165 @@ def ConvLarge_CIFAR10_1_LIP_GNP():
         torchlip.SpectralLinear(512, 512),
         GroupSort_General(),
         # nn.ReLU(),
+        torchlip.SpectralLinear(512, 10)
+    )
+    return model
+
+def VGG13_1_LIP_GNP_CIFAR10():
+    """
+    Model: VGG13-like_1_LIP_GNP (CIFAR-10)
+    Structure: [Conv(64) x 2] -> StridedConv -> [Conv(128) x 2] -> StridedConv -> 
+               [Conv(256) x 2] -> StridedConv -> [Linear(512) x 2] -> Linear(10)
+    Input: 3x32x32
+    """
+    model = torchlip.Sequential(
+        # Block 1: 3x32x32 -> 64x32x32
+        AdaptiveOrthoConv2d(3, 64, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        AdaptiveOrthoConv2d(64, 64, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        # Downsample: 64x32x32 -> 64x16x16
+        AdaptiveOrthoConv2d(64, 64, 3, 2, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+
+        # Block 2: 64x16x16 -> 128x16x16
+        AdaptiveOrthoConv2d(64, 128, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        AdaptiveOrthoConv2d(128, 128, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        # Downsample: 128x16x16 -> 128x8x8
+        AdaptiveOrthoConv2d(128, 128, 3, 2, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+
+        # Block 3: 128x8x8 -> 256x8x8
+        AdaptiveOrthoConv2d(128, 256, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        AdaptiveOrthoConv2d(256, 256, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        # Downsample: 256x8x8 -> 256x4x4
+        AdaptiveOrthoConv2d(256, 256, 3, 2, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+
+        # Classifier
+        nn.Flatten(),
+        # Input features: 256 * 4 * 4 = 4096
+        torchlip.SpectralLinear(256 * 4 * 4, 512),
+        GroupSort_General(),
+        torchlip.SpectralLinear(512, 512),
+        GroupSort_General(),
+        torchlip.SpectralLinear(512, 10)
+    )
+    return model
+
+
+def VGG16_1_LIP_GNP_CIFAR10():
+    """
+    Model: VGG16-like_1_LIP_GNP (CIFAR-10)
+    Structure: [Conv(64) x 2] -> StridedConv -> [Conv(128) x 2] -> StridedConv -> 
+               [Conv(256) x 3] -> StridedConv -> [Linear(512) x 2] -> Linear(10)
+    Input: 3x32x32
+    """
+    model = torchlip.Sequential(
+        # Block 1: 3x32x32 -> 64x32x32
+        AdaptiveOrthoConv2d(3, 64, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        AdaptiveOrthoConv2d(64, 64, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        # Downsample: 64x32x32 -> 64x16x16
+        AdaptiveOrthoConv2d(64, 64, 3, 2, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+
+        # Block 2: 64x16x16 -> 128x16x16
+        AdaptiveOrthoConv2d(64, 128, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        AdaptiveOrthoConv2d(128, 128, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        # Downsample: 128x16x16 -> 128x8x8
+        AdaptiveOrthoConv2d(128, 128, 3, 2, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+
+        # Block 3: 128x8x8 -> 256x8x8
+        AdaptiveOrthoConv2d(128, 256, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        AdaptiveOrthoConv2d(256, 256, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        AdaptiveOrthoConv2d(256, 256, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        # Downsample: 256x8x8 -> 256x4x4
+        AdaptiveOrthoConv2d(256, 256, 3, 2, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+
+        # Classifier
+        nn.Flatten(),
+        # Input features: 256 * 4 * 4 = 4096
+        torchlip.SpectralLinear(256 * 4 * 4, 512),
+        GroupSort_General(),
+        torchlip.SpectralLinear(512, 512),
+        GroupSort_General(),
+        torchlip.SpectralLinear(512, 10)
+    )
+    return model
+
+def VGG19_1_LIP_GNP_CIFAR10():
+    """
+    Model: VGG19-like_1_LIP_GNP (CIFAR-10)
+    Structure: [Conv(64) x 2] -> StridedConv -> [Conv(128) x 2] -> StridedConv -> 
+               [Conv(256) x 4] -> StridedConv -> [Conv(512) x 4] -> StridedConv ->
+               [Linear(512) x 2] -> Linear(10)
+    Input: 3x32x32
+    """
+    model = torchlip.Sequential(
+        # Block 1: 3x32x32 -> 64x32x32
+        AdaptiveOrthoConv2d(3, 64, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        AdaptiveOrthoConv2d(64, 64, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        # Downsample: 64x32x32 -> 64x16x16
+        AdaptiveOrthoConv2d(64, 64, 3, 2, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+
+        # Block 2: 64x16x16 -> 128x16x16
+        AdaptiveOrthoConv2d(64, 128, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        AdaptiveOrthoConv2d(128, 128, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        # Downsample: 128x16x16 -> 128x8x8
+        AdaptiveOrthoConv2d(128, 128, 3, 2, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+
+        # Block 3: 128x8x8 -> 256x8x8
+        AdaptiveOrthoConv2d(128, 256, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        AdaptiveOrthoConv2d(256, 256, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        AdaptiveOrthoConv2d(256, 256, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        AdaptiveOrthoConv2d(256, 256, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        # Downsample: 256x8x8 -> 256x4x4
+        AdaptiveOrthoConv2d(256, 256, 3, 2, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+
+        # Block 4: 256x4x4 -> 512x4x4
+        AdaptiveOrthoConv2d(256, 512, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        AdaptiveOrthoConv2d(512, 512, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        AdaptiveOrthoConv2d(512, 512, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        AdaptiveOrthoConv2d(512, 512, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        # Downsample: 512x4x4 -> 512x2x2
+        AdaptiveOrthoConv2d(512, 512, 3, 2, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+
+        # Classifier
+        nn.Flatten(),
+        # Input features: 512 * 2 * 2 = 2048
+        torchlip.SpectralLinear(512 * 2 * 2, 512),
+        GroupSort_General(),
+        torchlip.SpectralLinear(512, 512),
+        GroupSort_General(),
         torchlip.SpectralLinear(512, 10)
     )
     return model

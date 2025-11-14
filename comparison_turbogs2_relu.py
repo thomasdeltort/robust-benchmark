@@ -1,142 +1,343 @@
 import torch
 import torch.nn as nn
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-from auto_LiRPA import BoundedModule, BoundedTensor, register_custom_op
-from auto_LiRPA.bound_ops import Bound
+from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
+import warnings
 
-# --- Step 1: Define a `torch.autograd.Function` for the custom operator ---
-class GroupSortOp(torch.autograd.Function):
-    @staticmethod
-    def symbolic(g, x):
-        output = g.op('custom::GroupSort', x)
-        output.setType(x.type())
-        return output
+# Suppress auto_LiRPA warnings for cleaner output
+warnings.filterwarnings("ignore")
 
-    @staticmethod
-    def forward(ctx, x):
-        original_shape = x.shape
-        x_reshaped = x.contiguous().view(-1, 2)
-        sorted_x, _ = torch.sort(x_reshaped, dim=-1)
-        return sorted_x.view(original_shape)
+# --- Model Definitions (from your documentation) ---
 
-# --- Step 2: Define an `nn.Module` that uses the custom operator ---
 class GroupSort(nn.Module):
-    def forward(self, x):
-        return GroupSortOp.apply(x)
-
-# --- Step 3: Implement the complete Bound class for the custom operator ---
-class BoundGroupSort(Bound):
-    def __init__(self, attr, inputs, output_index, options):
-        super().__init__(attr, inputs, output_index, options)
-
-    def forward(self, x):
-        return GroupSortOp.forward(None, x)
-
-    def interval_propagate(self, *v):
-        lower, upper = v[0]
-        # --- ROBUSTNESS FIX 1 ---
-        # If the input bounds to this function have not been computed, we cannot proceed.
-        if lower is None or upper is None:
-            return None, None
+    """
+    Computes min/max using ONE SHARED ReLU node.
+    This is expected to be the TIGHTEST formulation
+    for bounding pairs under alpha-CROWN.
+    """
+    def __init__(self):
+        super(GroupSort, self).__init__()
+        self.relu = nn.ReLU() # ONE shared ReLU
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        original_shape = x.shape
+        batch_size = original_shape[0]
+        num_features = np.prod(original_shape[1:])
+        if num_features % 2 != 0: raise ValueError("Total features must be even.")
+        x_flat = x.reshape(batch_size, -1)
+        reshaped_x = x_flat.reshape(batch_size, -1, 2)
+        x1s = reshaped_x[..., 0]
+        x2s = reshaped_x[..., 1]
         
-        lower_reshaped = lower.contiguous().view(-1, 2)
-        upper_reshaped = upper.contiguous().view(-1, 2)
-        final_lower = torch.sort(lower_reshaped, dim=-1)[0].view(lower.shape)
-        final_upper = torch.sort(upper_reshaped, dim=-1)[0].view(upper.shape)
-        return final_lower, final_upper
+        diff = x1s - x2s
+        relu_diff = self.relu(diff) # Computed ONCE
+        
+        y1_min = x1s - relu_diff # min = a - ReLU(a-b)
+        y2_max = x2s + relu_diff # max = b + ReLU(a-b)
+        
+        sorted_pairs = torch.stack((y1_min, y2_max), dim=2)
+        sorted_flat = sorted_pairs.reshape(batch_size, -1)
+        output = sorted_flat.reshape(original_shape)
+        return output
+    
+# class MaxMin(nn.Module):
+#     """
+#     Computes min/max using torch.min and torch.max.
+#     These are bounded INDEPENDENTLY, losing the
+#     sum(min, max) = a + b correlation.
+#     """
+#     def forward(self, x):
+#         original_shape = x.shape
+#         batch_size = original_shape[0]
+#         num_features = np.prod(original_shape[1:])
+#         if num_features % 2 != 0: raise ValueError("Total features must be even.")
+#         x_flat = x.reshape(batch_size, -1)
+#         x_pairs = x_flat.reshape(batch_size, -1, 2)
+#         a = x_pairs[..., 0]
+#         b = x_pairs[..., 1]
+        
+#         min_vals = torch.min(a, b)
+#         max_vals = torch.max(a, b)
+        
+#         sorted_pairs = torch.stack((min_vals, max_vals), dim=-1)
+#         sorted_flat = sorted_pairs.reshape(batch_size, -1)
+#         return sorted_flat.reshape(original_shape)
 
-    def bound_backward(self, last_lA, last_uA, x, *args, **kwargs):
-        def _bound_oneside(last_A):
-            if last_A is None: return None, 0
-            l, u = x.lower, x.upper
+class MaxMin(nn.Module):
+    """
+    Computes min/max using torch.split.
+    
+    WARNING: This will still cause the broadcasting RuntimeError
+    in auto_LiRPA when batch size > 1.
+    """
+    def forward(self, x):
+        original_shape = x.shape
+        batch_size = original_shape[0]
+        num_features = np.prod(original_shape[1:])
+        
+        if num_features % 2 != 0: 
+            raise ValueError("Total features must be even.")
             
-            A_reshaped = last_A.view(last_A.shape[0], last_A.shape[1], -1, 2)
-            A_new = torch.zeros_like(A_reshaped)
-            A_y1, A_y2 = A_reshaped[..., 0], A_reshaped[..., 1]
+        x_flat = x.reshape(batch_size, -1)
+        x_pairs = x_flat.reshape(batch_size, -1, 2)
+        
+        # --- Using torch.split ---
+        # x_pairs has shape [batch_size, num_pairs, 2]
+        # This splits along dim=-1 into two tensors of size 1
+        a_tensor, b_tensor = torch.split(x_pairs, 1, dim=-1)
+        
+        # Squeeze the last dim to get shape [batch_size, num_pairs]
+        a = a_tensor.squeeze(-1)
+        b = b_tensor.squeeze(-1)
+        
+        # --- This is the part that causes the error ---
+        # These operations trigger the buggy handler in auto_LiRPA
+        min_vals = -torch.max(-a, -b)
+        max_vals = torch.max(a, b)
+        
+        # --- End of problematic part ---
+        
+        sorted_pairs = torch.stack((min_vals, max_vals), dim=-1)
+        sorted_flat = sorted_pairs.reshape(batch_size, -1)
+        return sorted_flat.reshape(original_shape)
 
-            # --- ROBUSTNESS FIX 2 ---
-            # If concrete bounds for the input x are missing, we MUST default
-            # to the most general (unstable) relaxation to avoid a crash.
-            if l is None or u is None:
-                A_new[..., 0] = torch.min(A_y1, A_y2)
-                A_new[..., 1] = torch.max(A_y1, A_y2)
+class Model_JustMax(nn.Module):
+    """
+    Computes *only* the max of pairs using torch.max.
+    Input: (batch, features)
+    Output: (batch, features / 2)
+    """
+    def forward(self, x):
+        batch_size = x.shape[0]
+        num_features = np.prod(x.shape[1:])
+        if num_features % 2 != 0: raise ValueError("Total features must be even.")
+        
+        x_flat = x.reshape(batch_size, -1)
+        x_pairs = x_flat.reshape(batch_size, -1, 2)
+        
+        a = x_pairs[..., 0]
+        b = x_pairs[..., 1]
+        
+        max_vals = torch.max(a, b)
+        return max_vals # Output shape is (batch, features / 2)
+
+class Model_Max_via_ReLU(nn.Module):
+    """
+    Computes *only* the max of pairs, using the ReLU reformulation.
+    Input: (batch, features)
+    Output: (batch, features / 2)
+    """
+    def __init__(self):
+        super().__init__()
+        self.relu = nn.ReLU()
+        
+    def forward(self, x):
+        batch_size = x.shape[0]
+        num_features = np.prod(x.shape[1:])
+        if num_features % 2 != 0: raise ValueError("Total features must be even.")
+        
+        x_flat = x.reshape(batch_size, -1)
+        x_pairs = x_flat.reshape(batch_size, -1, 2)
+        
+        a = x_pairs[..., 0]
+        b = x_pairs[..., 1]
+        
+        # The exact b + ReLU(a - b) formulation
+        # Note: this is max(a,b) = b + ReLU(a-b)
+        # The other formulation is max(a,b) = a + ReLU(b-a)
+        max_vals = b + self.relu(a - b)
+        return max_vals # Output shape is (batch, features / 2)
+
+class Model_Max_via_ReLU_Symmetric(nn.Module):
+    """
+    Computes *only* the max of pairs, using the symmetric ReLU reformulation.
+    Input: (batch, features)
+    Output: (batch, features / 2)
+    """
+    def __init__(self):
+        super().__init__()
+        self.relu = nn.ReLU()
+        
+    def forward(self, x):
+        batch_size = x.shape[0]
+        num_features = np.prod(x.shape[1:])
+        if num_features % 2 != 0: raise ValueError("Total features must be even.")
+        
+        x_flat = x.reshape(batch_size, -1)
+        x_pairs = x_flat.reshape(batch_size, -1, 2)
+        
+        a = x_pairs[..., 0]
+        b = x_pairs[..., 1]
+        
+        # The symmetric a + ReLU(b - a) formulation
+        max_vals = a + self.relu(b - a)
+        return max_vals # Output shape is (batch, features / 2)
+
+def print_comparison_table(title, model_names_map, results_dict, methods):
+    """Prints a clean, formatted table of the results."""
+    print("\n" + "="*80)
+    print(f"--- {title} ---")
+    print("="*80 + "\n")
+    
+    # Header
+    print(f"{'Model':<48} {'Method':<12} {'Lower Bound':<40} {'Upper Bound':<40}")
+    print("-"*140)
+    
+    # Data
+    for model_key, model_name in model_names_map.items():
+        for method in methods:
+            if model_key not in results_dict[method]:
+                # Handle cases where a model failed to run (e.g., if we skipped it)
+                lb_str = "N/A (CRASHED)"
+                ub_str = "N/A (CRASHED)"
             else:
-                l_reshaped = l.contiguous().view(l.shape[0], -1, 2)
-                u_reshaped = u.contiguous().view(u.shape[0], -1, 2)
-
-                case1 = (u_reshaped[..., 0] <= l_reshaped[..., 1]).unsqueeze(0).unsqueeze(0)
-                case2 = (u_reshaped[..., 1] <= l_reshaped[..., 0]).unsqueeze(0).unsqueeze(0)
-                case3 = ~case1 & ~case2
+                lb, ub = results_dict[method][model_key]
+                # Format tensors for clean printing
+                lb_str = " ".join(f"{x:7.4f}" for x in lb.flatten())
+                ub_str = " ".join(f"{x:7.4f}" for x in ub.flatten())
                 
-                A_new[..., 0] = torch.where(case1, A_y1, A_new[..., 0])
-                A_new[..., 1] = torch.where(case1, A_y2, A_new[..., 1])
-                A_new[..., 0] = torch.where(case2, A_y2, A_new[..., 0])
-                A_new[..., 1] = torch.where(case2, A_y1, A_new[..., 1])
-                A_new[..., 0] = torch.where(case3, torch.min(A_y1, A_y2), A_new[..., 0])
-                A_new[..., 1] = torch.where(case3, torch.max(A_y1, A_y2), A_new[..., 1])
+                # Pad lb/ub strings to align columns
+                lb_str = f"[{lb_str.strip()}]"
+                ub_str = f"[{ub_str.strip()}]"
+            
+            print(f"{model_name:<48} {method:<12} {lb_str:<40} {ub_str:<40}")
+        print("") # Add a newline for readability between models
 
-            return A_new.view_as(last_A), 0
+
+# --- Main execution to compare bounds for ONE point ---
+if __name__ == '__main__':
+    
+    # --- 1. Setup ---
+    IN_FEATURES = 8  # (Must be even)
+    EPSILON = 0.1    # L-infinity perturbation radius
+    METHODS_TO_TEST = ['alpha-crown']
+    # 'ibp', 'crown', 
+
+    # Use a fixed seed for reproducible results
+    torch.manual_seed(123)
+    
+    # --- Define all models ---
+    
+    # Comparison 1: "Max Only" models
+    models_comp1 = {
+        'torch_max': nn.Sequential(Model_JustMax()),
+        'relu_max': nn.Sequential(Model_Max_via_ReLU()),
+        'relu_max_sym': nn.Sequential(Model_Max_via_ReLU_Symmetric())
+    }
+    model_names_comp1 = {
+        'torch_max': 'Model_JustMax (torch.max)',
+        'relu_max': 'Model_Max_via_ReLU (b + ReLU(a-b))',
+        'relu_max_sym': 'Model_Max_via_ReLU_Symmetric (a + ReLU(b-a))'
+    }
+    
+    # Comparison 2: "Min/Max Pair" models
+    models_comp2 = {
+        'torch_mm': nn.Sequential(MaxMin()),
+        'gs_shared': nn.Sequential(GroupSort()),
+    }
+    model_names_comp2 = {
+        'torch_mm': 'MaxMin (torch.min/max)',
+        'gs_shared': 'GroupSort (shared ReLU)',
+    }
+    
+    # --- Define Test Cases (different input tensors) ---
+    
+    # This tensor tests all 3 ReLU states:
+    # Pair 1: [0.9, 1.1] vs [-1.3, -1.1] -> d in [2.0, 2.4] (Stable Active)
+    # Pair 2: [-0.05, 0.15] vs [0.0, 0.2] -> d in [-0.25, 0.15] (Unstable)
+    # Pair 3: [0.7, 0.9] vs [-0.4, -0.2] -> d in [0.9, 1.3] (Stable Active)
+    # Pair 4: [-0.1, 0.1] vs [1.4, 1.6] -> d in [-1.7, -1.3] (Stable Inactive)
+    x0_mixed = torch.tensor([[1.0, -1.2, 0.05, 0.1, 0.8, -0.3, 0.0, 1.5]]) 
+    
+    # This tensor tests 4 different "Unstable" ReLU states
+    # Pair 1: [-0.1, 0.1] vs [0.0, 0.2] -> d in [-0.3, 0.1] (Unstable)
+    # Pair 2: [-0.1, 0.1] vs [-0.1, 0.1] -> d in [-0.2, 0.2] (Unstable)
+    # Pair 3: [0.0, 0.2] vs [-0.1, 0.1] -> d in [-0.1, 0.3] (Unstable)
+    # Pair 4: [0.4, 0.6] vs [0.4, 0.6] -> d in [-0.2, 0.2] (Unstable)
+    x0_unstable = torch.tensor([[0.0, 0.1, 0.0, 0.0, 0.1, 0.0, 0.5, 0.5]])
+    
+    test_cases = {
+        "TEST CASE 1: Mixed ReLU States (Active, Inactive, Unstable)": x0_mixed,
+        "TEST CASE 2: All Unstable ReLU States": x0_unstable
+    }
+
+    ptb = PerturbationLpNorm(norm=torch.inf, eps=EPSILON)
+
+    # --- 2. Run All Computations for All Test Cases ---
+    
+    for case_name, x0 in test_cases.items():
         
-        lA, lbias = _bound_oneside(last_lA)
-        uA, ubias = _bound_oneside(last_uA)
-        return [(lA, uA)], lbias, ubias
+        print("\n" + "#"*80)
+        print(f"### {case_name}")
+        print(f"### Input point (x0): {x0}")
+        print("#"*80)
 
-# --- Step 4: Register the custom operator name with its Bound class ---
-register_custom_op("custom::GroupSort", BoundGroupSort)
-
-# --- Experiment Function ---
-def run_final_comparison(in_features=10, out_features=10, epsilon=0.1, num_trials=500):
-    relu_widths, groupsort_widths = [], []
-    for i in range(num_trials):
-        linear_layer = nn.Linear(in_features, out_features)
-        model_relu = nn.Sequential(linear_layer, nn.ReLU())
-        model_groupsort = nn.Sequential(linear_layer, GroupSort())
-        
-        x0 = torch.randn(1, in_features)
-        ptb = PerturbationLpNorm(norm=torch.inf, eps=epsilon)
         bounded_input = BoundedTensor(x0, ptb)
         
-        lirpa_model_relu = BoundedModule(model_relu, x0)
-        lb_relu, ub_relu = lirpa_model_relu.compute_bounds(x=(bounded_input,), method='CROWN')
-        relu_widths.append(torch.mean(ub_relu - lb_relu).item())
+        # --- Check Forward Pass (Sanity Check) ---
+        print("\n--- Forward Pass Check ---")
+        with torch.no_grad():
+            out_torch_max_only = models_comp1['torch_max'](x0)
+            out_relu_max_only = models_comp1['relu_max'](x0)
+            out_relu_max_only_sym = models_comp1['relu_max_sym'](x0)
+            print(f"  Max-only outputs are identical: {torch.allclose(out_torch_max_only, out_relu_max_only) and torch.allclose(out_torch_max_only, out_relu_max_only_sym)}")
+            
+            out_torch_maxmin = models_comp2['torch_mm'](x0)
+            out_relu_groupsort = models_comp2['gs_shared'](x0)
+            print(f"  Min/Max Pair outputs are identical: {torch.allclose(out_torch_maxmin, out_relu_groupsort)}\n")
+
         
-        lirpa_model_gs = BoundedModule(model_groupsort, x0)
-        lb_gs, ub_gs = lirpa_model_gs.compute_bounds(x=(bounded_input,), method='CROWN')
-        groupsort_widths.append(torch.mean(ub_gs - lb_gs).item())
+        # --- Compute All Bounds ---
+        results_comp1 = {method: {} for method in METHODS_TO_TEST}
+        results_comp2 = {method: {} for method in METHODS_TO_TEST}
 
-    return relu_widths, groupsort_widths
+        for method in METHODS_TO_TEST:
+            print(f"--- Running bound computation for method: '{method}' ---")
+            
+            # # Run Comparison 1
+            # for key, model in models_comp1.items():
+            #     print(f"  Computing bounds for {model_names_comp1[key]}...")
+            #     lirpa_model = BoundedModule(model, x0)
+            #     lb, ub = lirpa_model.compute_bounds(x=(bounded_input,), method=method)
+            #     results_comp1[method][key] = (lb.detach(), ub.detach())
 
-# --- Run and Visualize ---
-if __name__ == '__main__':
-    INPUT_DIM, OUTPUT_DIM, EPSILON, NUM_TRIALS = 20, 20, 0.05, 1000
-    print("Running comparison with DEFINITIVE Custom GroupSort handler...")
-    relu_results, groupsort_results = run_final_comparison(
-        in_features=INPUT_DIM, out_features=OUTPUT_DIM, epsilon=EPSILON, num_trials=NUM_TRIALS
-    )
-    print("Done.\n")
-    
-    mean_relu, mean_gs = np.mean(relu_results), np.mean(groupsort_results)
-    print("--- Average Bound Width Results (lower is better) ---")
-    print(f"ReLU                 : {mean_relu:.6f}")
-    print(f"Custom GroupSort     : {mean_gs:.6f}")
-    
-    if mean_gs < mean_relu:
-        improvement = (1 - mean_gs / mean_relu) * 100
-        print(f"\n✅ Custom GroupSort produced bounds that were on average {improvement:.2f}% tighter than ReLU.")
-    else:
-        improvement = (1 - mean_relu / mean_gs) * 100
-        print(f"\n❌ ReLU bounds were unexpectedly tighter by {improvement:.2f}%.")
+            # Run Comparison 2
+            for key, model in models_comp2.items():
+                print(f"  Computing bounds for {model_names_comp2[key]}...")
+                
+                bound_opts = {}
+                # --- WORKAROUND FOR auto_LiRPA BUG ---
+                # Apply a workaround for a known alpha-CROWN bug in the min/max operator
+                if key == 'torch_mm' and method == 'alpha-crown':
+                    print("    -> Applying 'no_alpha_layers' workaround for MaxMin.")
+                    # The model is nn.Sequential(MaxMin()), so its module name is '0'
+                    bound_opts = {
+                        'optimize_bound_args': {
+                             'no_alpha_layers': ['0'] 
+                        }
+                    }
+                
+                lirpa_model = BoundedModule(model, x0, bound_opts=bound_opts)
+                # --- END OF WORKAROUND ---
 
-    plt.style.use('seaborn-v0_8-whitegrid')
-    plt.figure(figsize=(10, 6))
-    sns.histplot(relu_results, color="skyblue", kde=True, label=f'ReLU (Mean: {mean_relu:.4f})', bins=50)
-    sns.histplot(groupsort_results, color="violet", kde=True, label=f'Custom GroupSort (Mean: {mean_gs:.4f})', bins=50)
-    plt.title('Distribution of CROWN Bound Widths', fontsize=16)
-    plt.xlabel('Average Bound Width')
-    plt.ylabel('Frequency')
-    plt.legend()
-    plt.show()
+                lb, ub = lirpa_model.compute_bounds(x=(bounded_input,), method=method)
+                results_comp2[method][key] = (lb.detach(), ub.detach())
+
+        # --- Print All Results ---
+        
+        print_comparison_table(
+            title=f"COMPARISON 1: 'MAX ONLY' MODELS ({case_name})",
+            model_names_map=model_names_comp1,
+            results_dict=results_comp1,
+            methods=METHODS_TO_TEST
+        )
+        
+        print_comparison_table(
+            title=f"COMPARISON 2: 'MIN/MAX PAIR' MODELS ({case_name})",
+            model_names_map=model_names_comp2,
+            results_dict=results_comp2,
+            methods=METHODS_TO_TEST
+        )
+
+    print("\n--- End of Analysis ---")
 
