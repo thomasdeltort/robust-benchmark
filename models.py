@@ -103,6 +103,27 @@ class MaxMin(nn.Module):
         sorted_flat = sorted_pairs.reshape(batch_size, -1)
         return sorted_flat.reshape(original_shape)
     
+class GroupSort2Optimized(nn.Module):
+    # THIS IMPLEMENTATION IS NOT VERIFIABLE WITH auto_LiRPA
+    # due to torch.max(a, b)
+    def __init__(self):
+        super(GroupSort2Optimized, self).__init__()
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        original_shape = x.shape
+        batch_size = original_shape[0]
+        num_features = np.prod(original_shape[1:])
+        if num_features % 2 != 0: raise ValueError("Total features must be even.")
+        x_flat = x.reshape(batch_size, -1)
+        reshaped_x = x_flat.reshape(batch_size, -1, 2)
+        x1s = reshaped_x[..., 0]
+        x2s = reshaped_x[..., 1]
+        y2_max = torch.max(x1s, x2s) # <--- THIS IS THE UNSUPPORTED OPERATION
+        y1_min = x1s + x2s - y2_max
+        sorted_pairs = torch.stack((y1_min, y2_max), dim=2)
+        sorted_flat = sorted_pairs.reshape(batch_size, -1)
+        output = sorted_flat.reshape(original_shape)
+        return output
+    
 def ConvLarge_MNIST_1_LIP_GNP_MaxMin():
     """
     Model: ConvLarge_1_LIP_GNP (MNIST)
@@ -111,18 +132,18 @@ def ConvLarge_MNIST_1_LIP_GNP_MaxMin():
     """
     model = torchlip.Sequential(
         AdaptiveOrthoConv2d(in_channels=1, out_channels=32, kernel_size=3, stride=1, padding=1, padding_mode='zeros',ortho_params=DEFAULT_ORTHO_PARAMS),
-        MaxMin(),
+        GroupSort2Optimized(),
         AdaptiveOrthoConv2d(in_channels=32, out_channels=32, kernel_size=4, stride=2, padding=1, padding_mode='zeros',ortho_params=DEFAULT_ORTHO_PARAMS),
-        MaxMin(),
+        GroupSort2Optimized(),
         AdaptiveOrthoConv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1, padding_mode='zeros',ortho_params=DEFAULT_ORTHO_PARAMS),
-        MaxMin(),
+        GroupSort2Optimized(),
         AdaptiveOrthoConv2d(in_channels=64, out_channels=64, kernel_size=4, stride=2, padding=1, padding_mode='zeros',ortho_params=DEFAULT_ORTHO_PARAMS),
-        MaxMin(),
+        GroupSort2Optimized(),
         nn.Flatten(),
         torchlip.SpectralLinear(64 * 7 * 7, 512), # 3136 input features
-        MaxMin(),
+        GroupSort2Optimized(),
         torchlip.SpectralLinear(512, 512),
-        MaxMin(),
+        GroupSort2Optimized(),
         torchlip.SpectralLinear(512, 10)
     )
     return model

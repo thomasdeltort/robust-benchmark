@@ -59,7 +59,6 @@ model_zoo = {
     "MLP_MNIST_1_LIP": MLP_MNIST_1_LIP,
     "ConvSmall_MNIST_1_LIP": ConvSmall_MNIST_1_LIP,
     "ConvLarge_MNIST_1_LIP": ConvLarge_MNIST_1_LIP,
-    "ConvLarge_MNIST_1_LIP_MaxMin": ConvLarge_MNIST_1_LIP_MaxMin,
     "CNNA_CIFAR10_1_LIP": CNNA_CIFAR10_1_LIP,
     "CNNB_CIFAR10_1_LIP": CNNB_CIFAR10_1_LIP,
     "CNNC_CIFAR10_1_LIP": CNNC_CIFAR10_1_LIP,
@@ -71,6 +70,7 @@ model_zoo = {
     "MLP_MNIST_1_LIP_GNP": MLP_MNIST_1_LIP_GNP,
     "ConvSmall_MNIST_1_LIP_GNP": ConvSmall_MNIST_1_LIP_GNP,
     "ConvLarge_MNIST_1_LIP_GNP": ConvLarge_MNIST_1_LIP_GNP,
+    "ConvLarge_MNIST_1_LIP_GNP_MaxMin": ConvLarge_MNIST_1_LIP_GNP_MaxMin,
     "CNNA_CIFAR10_1_LIP_GNP": CNNA_CIFAR10_1_LIP_GNP,
     "CNNB_CIFAR10_1_LIP_GNP": CNNB_CIFAR10_1_LIP_GNP,
     "CNNC_CIFAR10_1_LIP_GNP": CNNC_CIFAR10_1_LIP_GNP,
@@ -169,6 +169,7 @@ def main():
     aa_era, time_aa = compute_autoattack_era_and_time(images, targets, model, args.epsilon, clean_indices, norm = norm, dataset_name=args.dataset)
     print(f"  - Empirical Robustness (AutoAttack): {aa_era:.2f}% | Time: {time_aa:.4f}s")
     # aa_era, time_aa = 0,0
+    print(model)
     lirpa_alpha_vra, time_lirpa_alpha = compute_alphacrown_vra_and_time(images, targets, model, epsilon_rescaled, clean_indices, norm = args.norm)
     print(f"  - Certified Robustness (LIRPA α-CROWN): {lirpa_alpha_vra:.2f}% | Time: {time_lirpa_alpha:.4f}s")
     # lirpa_alpha_vra, time_lirpa_alpha = 0, 0

@@ -14,6 +14,7 @@ from models import *
 from project_utils import *
 sys.path.append('/home/aws_install/robustess_project/lip_notebooks/notebooks_creation_models')
 from VGG_Arthur import HKRMultiLossLSE
+from deel.torchlip import TauCrossEntropyLoss
 
 
 def main(args):
@@ -56,6 +57,8 @@ def main(args):
     "ConvSmall_CIFAR10_1_LIP_GNP": ConvSmall_CIFAR10_1_LIP_GNP,
     "ConvDeep_CIFAR10_1_LIP_GNP": ConvDeep_CIFAR10_1_LIP_GNP,
     "ConvLarge_CIFAR10_1_LIP_GNP": ConvLarge_CIFAR10_1_LIP_GNP,
+    "VGG13_1_LIP_GNP_CIFAR10" : VGG13_1_LIP_GNP_CIFAR10,
+    "VGG19_1_LIP_GNP_CIFAR10" : VGG19_1_LIP_GNP_CIFAR10,
 }
 
     if args.model_name not in model_zoo:
@@ -70,9 +73,10 @@ def main(args):
 
     # --- 3. Setup Optimizer, Scheduler, and Loss ---
     optimizer = torch.optim.Adam(lr=args.lr, params=model.parameters())
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[20, 40], gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[40, 60, 80], gamma=0.2)
     
-    criterion = HKRMultiLossLSE(alpha=250, temperature=args.temperature, penalty=0.5, margin=1.0)
+    # criterion = HKRMultiLossLSE(alpha=250, temperature=args.temperature, penalty=0.5, margin=1.0)
+    criterion = TauCrossEntropyLoss(tau = args.temperature)
     
     kr_multiclass_loss = torchlip.KRMulticlassLoss()
     num_classes = 10 
@@ -195,6 +199,8 @@ choices = [
     "ConvSmall_CIFAR10_1_LIP_GNP",
     "ConvDeep_CIFAR10_1_LIP_GNP",
     "ConvLarge_CIFAR10_1_LIP_GNP",
+    "VGG13_1_LIP_GNP_CIFAR10",
+    "VGG19_1_LIP_GNP_CIFAR10",
 ]
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train a PyTorch model with command-line arguments.')
@@ -205,7 +211,7 @@ if __name__ == '__main__':
     parser.add_argument('--temperature', type=float, default=200.0,
                         help='Temperature for the HKRMultiLossLSE loss function.')
                         
-    parser.add_argument('--batch_size', type=int, default=256,
+    parser.add_argument('--batch_size', type=int, default=512,
                         help='Input batch size for training.')
 
     parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10', 'mnist'],
