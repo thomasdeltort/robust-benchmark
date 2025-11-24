@@ -73,7 +73,7 @@ def main(args):
 
     # --- 3. Setup Optimizer, Scheduler, and Loss ---
     optimizer = torch.optim.Adam(lr=args.lr, params=model.parameters())
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[40, 60, 80], gamma=0.2)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[10, 20, 30, 40], gamma=0.5)
     
     # criterion = HKRMultiLossLSE(alpha=250, temperature=args.temperature, penalty=0.5, margin=1.0)
     criterion = TauCrossEntropyLoss(tau = args.temperature)

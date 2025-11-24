@@ -159,16 +159,36 @@ def main():
 
     # Note from author: It seems that the radius obtained should be rescaled to be comparable to epsilon.
     # This is a crucial step to ensure fair comparison across different data normalizations.
-    _, certificates_cra, time_cra = compute_certificates_CRA(images, model, epsilon_rescaled, clean_indices, norm = norm, L = L)
-    print(f"  - Certified Robustness (CRA): {certificates_cra:.2f}% | Time: {time_cra:.4f}s")
-    # certificates_cra, time_cra = 0,0
-    pgd_era, time_pgd = compute_pgd_era_and_time(images, targets, model, args.epsilon, clean_indices, norm = norm, dataset_name=args.dataset)
-    print(f"  - Empirical Robustness (PGD): {pgd_era:.2f}% | Time: {time_pgd:.4f}s")
-    # pgd_era, time_pgd = 0,0
-    aa_era, time_aa = compute_autoattack_era_and_time(images, targets, model, args.epsilon, clean_indices, norm = norm, dataset_name=args.dataset)
-    print(f"  - Empirical Robustness (AutoAttack): {aa_era:.2f}% | Time: {time_aa:.4f}s")
-    # aa_era, time_aa = 0,0
-    # lirpa_alpha_vra, time_lirpa_alpha = compute_alphacrown_vra_and_time(images, targets, model, epsilon_rescaled, clean_indices, norm = args.norm)
+    # _, certificates_cra, time_cra = compute_certificates_CRA(images, model, epsilon_rescaled, clean_indices, norm = norm, L = L)
+    # print(f"  - Certified Robustness (CRA): {certificates_cra:.2f}% | Time: {time_cra:.4f}s")
+    certificates_cra, time_cra = 0,0
+    # pgd_era, time_pgd = compute_pgd_era_and_time(images, targets, model, args.epsilon, clean_indices, norm = norm, dataset_name=args.dataset)
+    # print(f"  - Empirical Robustness (PGD): {pgd_era:.2f}% | Time: {time_pgd:.4f}s")
+    pgd_era, time_pgd = 0,0
+    # aa_era, time_aa = compute_autoattack_era_and_time(images, targets, model, args.epsilon, clean_indices, norm = norm, dataset_name=args.dataset)
+    # print(f"  - Empirical Robustness (AutoAttack): {aa_era:.2f}% | Time: {time_aa:.4f}s")
+    aa_era, time_aa = 0,0
+
+    if "mnist" in args.dataset.lower():
+        # MNIST: Raw range is usually [0, 1] with no mean/std normalization applied
+        # We create tensors of shape (1, 1, 1, 1) for broadcasting
+        x_L = torch.tensor(0.0, device=device).view(1, 1, 1, 1)
+        x_U = torch.tensor(1.0, device=device).view(1, 1, 1, 1)
+
+    elif "cifar" in args.dataset.lower():
+        # CIFAR: Range [0, 1] transformed by (image - mean) / std
+        # We define Mean/Std and reshape to (1, 3, 1, 1) for broadcasting
+        MEANS = torch.tensor([0.4914, 0.4822, 0.4465], device=device).view(1, 3, 1, 1)
+        STD = torch.tensor([0.225, 0.225, 0.225], device=device).view(1, 3, 1, 1)
+       
+        # Calculate normalized bounds
+        x_L = (0 - MEANS) / STD
+        x_U = (1 - MEANS) / STD
+
+    else:
+        raise ValueError(f"Bounds not defined for dataset: {args.dataset}")
+    
+    # lirpa_alpha_vra, time_lirpa_alpha = compute_alphacrown_vra_and_time(images, targets, model, epsilon_rescaled, clean_indices, norm = args.norm, x_U=x_U, x_L=x_L)
     # print(f"  - Certified Robustness (LIRPA α-CROWN): {lirpa_alpha_vra:.2f}% | Time: {time_lirpa_alpha:.4f}s")
     lirpa_alpha_vra, time_lirpa_alpha = 0, 0
     if norm =='inf':
@@ -180,10 +200,10 @@ def main():
         print(f"  - Certified Robustness (LIRPA β-CROWN): {lirpa_beta_vra:.2f}% | Time: {time_lirpa_beta:.4f}s")
         # lirpa_beta_vra, time_lirpa_beta = 0, 0
         sdp_crown_vra, time_sdp = 0, 0
-    elif norm == '2':
-        sdp_crown_vra, time_sdp = compute_sdp_crown_vra(images, targets, model, epsilon_rescaled, clean_indices, device, classes, args)
-        print(f"  - Certified Robustness (SDP-CROWN): {sdp_crown_vra:.2f}% | Time: {time_sdp:.4f}s")
-        # sdp_crown_vra, time_sdp = 0, 0
+    # elif norm == '2':
+    #     sdp_crown_vra, time_sdp = compute_sdp_crown_vra(images, targets, model, epsilon_rescaled, clean_indices, device, classes, args, x_U=x_U, x_L=x_L)
+    #     print(f"  - Certified Robustness (SDP-CROWN): {sdp_crown_vra:.2f}% | Time: {time_sdp:.4f}s")
+        sdp_crown_vra, time_sdp = 0, 0
         lirpa_beta_vra, time_lirpa_beta = 0, 0
     # --- 5. Store and Save Results ---
     # The results are collected in a dictionary. The keys will become the CSV header.

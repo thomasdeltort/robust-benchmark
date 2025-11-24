@@ -324,53 +324,53 @@ MODEL_PATH_GNP="/home/aws_install/robustess_project/Robust_Benchmark/models/mnis
 MODEL_NAME_GNP="MLP_MNIST_1_LIP_GNP"
 DATASET_GNP="mnist"
 
-# --- Experiment 1: L-infinity Norm (GNP) ---
-echo "====================================================="
-echo "Starting Experiment 1: L-infinity Norm (MLP GNP MNIST)"
-echo "====================================================="
+# # --- Experiment 1: L-infinity Norm (GNP) ---
+# echo "====================================================="
+# echo "Starting Experiment 1: L-infinity Norm (MLP GNP MNIST)"
+# echo "====================================================="
 
-# --- Configuration for Experiment 1 ---
-# !!! Please ADJUST these epsilon values as needed for this model !!!
-START_EPS_1=0.05
-END_EPS_1=0.4
-POINTS_1=20
+# # --- Configuration for Experiment 1 ---
+# # !!! Please ADJUST these epsilon values as needed for this model !!!
+# START_EPS_1=0.005
+# END_EPS_1=0.05
+# POINTS_1=20
 
-# --- Base Command Arguments for Experiment 1 ---
-BASE_OUTPUT_NAME_1="MLP_LIP_GNP_Mnist_Linf"
-NORM_TYPE_1="inf"
+# # --- Base Command Arguments for Experiment 1 ---
+# BASE_OUTPUT_NAME_1="MLP_LIP_GNP_Mnist_Linf"
+# NORM_TYPE_1="inf"
 
-# Generate epsilon values for Experiment 1
-EPSILON_VALUES_1=$(python3 -c "import numpy as np; print(' '.join(f'{x:.6f}' for x in np.linspace($START_EPS_1, $END_EPS_1, $POINTS_1)))")
+# # Generate epsilon values for Experiment 1
+# EPSILON_VALUES_1=$(python3 -c "import numpy as np; print(' '.join(f'{x:.6f}' for x in np.linspace($START_EPS_1, $END_EPS_1, $POINTS_1)))")
 
-if [ -z "$EPSILON_VALUES_1" ]; then
-    echo "Error: Could not generate epsilon values for Experiment 1."
-    exit 1
-fi
+# if [ -z "$EPSILON_VALUES_1" ]; then
+#     echo "Error: Could not generate epsilon values for Experiment 1."
+#     exit 1
+# fi
 
-echo "Epsilon will range from $START_EPS_1 to $END_EPS_1 in $POINTS_1 steps."
+# echo "Epsilon will range from $START_EPS_1 to $END_EPS_1 in $POINTS_1 steps."
 
-# Loop over each epsilon value for Experiment 1
-for epsilon in $EPSILON_VALUES_1
-do
-  echo "-----------------------------------------------------"
-  echo "Executing L-inf command with epsilon = $epsilon"
-  echo "-----------------------------------------------------"
+# # Loop over each epsilon value for Experiment 1
+# for epsilon in $EPSILON_VALUES_1
+# do
+#   echo "-----------------------------------------------------"
+#   echo "Executing L-inf command with epsilon = $epsilon"
+#   echo "-----------------------------------------------------"
 
-  OUTPUT_CSV="${BASE_OUTPUT_NAME_1}.csv"
-  OUTPUT_PKL="${BASE_OUTPUT_NAME_1}_eps_${epsilon}.pkl"
+#   OUTPUT_CSV="${BASE_OUTPUT_NAME_1}.csv"
+#   OUTPUT_PKL="${BASE_OUTPUT_NAME_1}_eps_${epsilon}.pkl"
 
-  python main.py \
-    --model_path "$MODEL_PATH_GNP" \
-    --model "$MODEL_NAME_GNP" \
-    --dataset "$DATASET_GNP" \
-    --epsilon "$epsilon" \
-    --output_csv "$OUTPUT_CSV" \
-    --output_pkl "$OUTPUT_PKL" \
-    --norm "$NORM_TYPE_1"
-done
-echo "Experiment 1 finished."
+#   python main.py \
+#     --model_path "$MODEL_PATH_GNP" \
+#     --model "$MODEL_NAME_GNP" \
+#     --dataset "$DATASET_GNP" \
+#     --epsilon "$epsilon" \
+#     --output_csv "$OUTPUT_CSV" \
+#     --output_pkl "$OUTPUT_PKL" \
+#     --norm "$NORM_TYPE_1"
+# done
+# echo "Experiment 1 finished."
 
----
+# ---
 
 # --- Experiment 2: L2 Norm (GNP) ---
 echo "====================================================="
@@ -379,9 +379,9 @@ echo "====================================================="
 
 # --- Configuration for Experiment 2 ---
 # !!! Please ADJUST these epsilon values as needed for this model !!!
-START_EPS_2=0.5
-END_EPS_2=3.0
-POINTS_2=20
+START_EPS_2=1.3
+END_EPS_2=1.8
+POINTS_2=10
 
 # --- Base Command Arguments for Experiment 2 ---
 BASE_OUTPUT_NAME_2="MLP_LIP_GNP_Mnist_L2"
@@ -425,53 +425,53 @@ MODEL_PATH_LIP="/home/aws_install/robustess_project/Robust_Benchmark/models/mnis
 MODEL_NAME_LIP="MLP_MNIST_1_LIP"
 DATASET_LIP="mnist" # Assuming dataset is the same
 
-# --- Experiment 3: L-infinity Norm (No GNP) ---
-echo "====================================================="
-echo "Starting Experiment 3: L-infinity Norm (MLP LIP MNIST)"
-echo "====================================================="
+# # --- Experiment 3: L-infinity Norm (No GNP) ---
+# echo "====================================================="
+# echo "Starting Experiment 3: L-infinity Norm (MLP LIP MNIST)"
+# echo "====================================================="
 
-# --- Configuration for Experiment 3 ---
-# !!! Please ADJUST these epsilon values as needed for this model !!!
-START_EPS_3=0.05
-END_EPS_3=0.4
-POINTS_3=20
+# # --- Configuration for Experiment 3 ---
+# # !!! Please ADJUST these epsilon values as needed for this model !!!
+# START_EPS_3=0.005
+# END_EPS_3=0.05
+# POINTS_3=20
 
-# --- Base Command Arguments for Experiment 3 ---
-BASE_OUTPUT_NAME_3="MLP_LIP_Mnist_Linf"
-NORM_TYPE_3="inf"
+# # --- Base Command Arguments for Experiment 3 ---
+# BASE_OUTPUT_NAME_3="MLP_LIP_Mnist_Linf"
+# NORM_TYPE_3="inf"
 
-# Generate epsilon values for Experiment 3
-EPSILON_VALUES_3=$(python3 -c "import numpy as np; print(' '.join(f'{x:.6f}' for x in np.linspace($START_EPS_3, $END_EPS_3, $POINTS_3)))")
+# # Generate epsilon values for Experiment 3
+# EPSILON_VALUES_3=$(python3 -c "import numpy as np; print(' '.join(f'{x:.6f}' for x in np.linspace($START_EPS_3, $END_EPS_3, $POINTS_3)))")
 
-if [ -z "$EPSILON_VALUES_3" ]; then
-    echo "Error: Could not generate epsilon values for Experiment 3."
-    exit 1
-fi
+# if [ -z "$EPSILON_VALUES_3" ]; then
+#     echo "Error: Could not generate epsilon values for Experiment 3."
+#     exit 1
+# fi
 
-echo "Epsilon will range from $START_EPS_3 to $END_EPS_3 in $POINTS_3 steps."
+# echo "Epsilon will range from $START_EPS_3 to $END_EPS_3 in $POINTS_3 steps."
 
-# Loop over each epsilon value for Experiment 3
-for epsilon in $EPSILON_VALUES_3
-do
-  echo "-----------------------------------------------------"
-  echo "Executing L-inf command with epsilon = $epsilon"
-  echo "-----------------------------------------------------"
+# # Loop over each epsilon value for Experiment 3
+# for epsilon in $EPSILON_VALUES_3
+# do
+#   echo "-----------------------------------------------------"
+#   echo "Executing L-inf command with epsilon = $epsilon"
+#   echo "-----------------------------------------------------"
 
-  OUTPUT_CSV="${BASE_OUTPUT_NAME_3}.csv"
-  OUTPUT_PKL="${BASE_OUTPUT_NAME_3}_eps_${epsilon}.pkl"
+#   OUTPUT_CSV="${BASE_OUTPUT_NAME_3}.csv"
+#   OUTPUT_PKL="${BASE_OUTPUT_NAME_3}_eps_${epsilon}.pkl"
 
-  python main.py \
-    --model_path "$MODEL_PATH_LIP" \
-    --model "$MODEL_NAME_LIP" \
-    --dataset "$DATASET_LIP" \
-    --epsilon "$epsilon" \
-    --output_csv "$OUTPUT_CSV" \
-    --output_pkl "$OUTPUT_PKL" \
-    --norm "$NORM_TYPE_3"
-done
-echo "Experiment 3 finished."
+#   python main.py \
+#     --model_path "$MODEL_PATH_LIP" \
+#     --model "$MODEL_NAME_LIP" \
+#     --dataset "$DATASET_LIP" \
+#     --epsilon "$epsilon" \
+#     --output_csv "$OUTPUT_CSV" \
+#     --output_pkl "$OUTPUT_PKL" \
+#     --norm "$NORM_TYPE_3"
+# done
+# echo "Experiment 3 finished."
 
----
+# ---
 
 # --- Experiment 4: L2 Norm (No GNP) ---
 echo "====================================================="
@@ -480,9 +480,9 @@ echo "====================================================="
 
 # --- Configuration for Experiment 4 ---
 # !!! Please ADJUST these epsilon values as needed for this model !!!
-START_EPS_4=0.5
-END_EPS_4=3.0
-POINTS_4=20
+START_EPS_4=3.0
+END_EPS_4=4.0
+POINTS_4=10
 
 # --- Base Command Arguments for Experiment 4 ---
 BASE_OUTPUT_NAME_4="MLP_LIP_Mnist_L2"
