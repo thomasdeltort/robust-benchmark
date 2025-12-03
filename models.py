@@ -65,43 +65,6 @@ class GroupSort_General(nn.Module):
         
         return output
     
-class MaxMin(nn.Module):
-    """
-    Computes min/max using torch.split.
-    
-    WARNING: This will still cause the broadcasting RuntimeError
-    in auto_LiRPA when batch size > 1.
-    """
-    def forward(self, x):
-        original_shape = x.shape
-        batch_size = original_shape[0]
-        num_features = np.prod(original_shape[1:])
-        
-        if num_features % 2 != 0: 
-            raise ValueError("Total features must be even.")
-            
-        x_flat = x.reshape(batch_size, -1)
-        x_pairs = x_flat.reshape(batch_size, -1, 2)
-        
-        # --- Using torch.split ---
-        # x_pairs has shape [batch_size, num_pairs, 2]
-        # This splits along dim=-1 into two tensors of size 1
-        a_tensor, b_tensor = torch.split(x_pairs, 1, dim=-1)
-        
-        # Squeeze the last dim to get shape [batch_size, num_pairs]
-        a = a_tensor.squeeze(-1)
-        b = b_tensor.squeeze(-1)
-        
-        # --- This is the part that causes the error ---
-        # These operations trigger the buggy handler in auto_LiRPA
-        min_vals = -torch.max(-a, -b)
-        max_vals = torch.max(a, b)
-        
-        # --- End of problematic part ---
-        
-        sorted_pairs = torch.stack((min_vals, max_vals), dim=-1)
-        sorted_flat = sorted_pairs.reshape(batch_size, -1)
-        return sorted_flat.reshape(original_shape)
     
 class GroupSort2Optimized(nn.Module):
     # THIS IMPLEMENTATION IS NOT VERIFIABLE WITH auto_LiRPA
@@ -124,29 +87,6 @@ class GroupSort2Optimized(nn.Module):
         output = sorted_flat.reshape(original_shape)
         return output
     
-def ConvLarge_MNIST_1_LIP_GNP_MaxMin():
-    """
-    Model: ConvLarge_1_LIP_GNP (MNIST)
-    Structure: Conv(1, 32, 3, 1, 1) -> ReLU -> Conv(32, 32, 4, 2, 1) -> ReLU -> Conv(32, 64, 3, 1, 1) -> ReLU ->
-               Conv(64, 64, 4, 2, 1) -> ReLU -> Linear(3136, 512) -> ReLU -> Linear(512, 512) -> ReLU -> Linear(512, 10)
-    """
-    model = torchlip.Sequential(
-        AdaptiveOrthoConv2d(in_channels=1, out_channels=32, kernel_size=3, stride=1, padding=1, padding_mode='zeros',ortho_params=DEFAULT_ORTHO_PARAMS),
-        GroupSort2Optimized(),
-        AdaptiveOrthoConv2d(in_channels=32, out_channels=32, kernel_size=4, stride=2, padding=1, padding_mode='zeros',ortho_params=DEFAULT_ORTHO_PARAMS),
-        GroupSort2Optimized(),
-        AdaptiveOrthoConv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1, padding_mode='zeros',ortho_params=DEFAULT_ORTHO_PARAMS),
-        GroupSort2Optimized(),
-        AdaptiveOrthoConv2d(in_channels=64, out_channels=64, kernel_size=4, stride=2, padding=1, padding_mode='zeros',ortho_params=DEFAULT_ORTHO_PARAMS),
-        GroupSort2Optimized(),
-        nn.Flatten(),
-        torchlip.SpectralLinear(64 * 7 * 7, 512), # 3136 input features
-        GroupSort2Optimized(),
-        torchlip.SpectralLinear(512, 512),
-        GroupSort2Optimized(),
-        torchlip.SpectralLinear(512, 10)
-    )
-    return model
 
 def MNIST_MLP():
 	model = nn.Sequential(

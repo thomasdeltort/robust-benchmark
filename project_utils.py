@@ -20,62 +20,89 @@ import os
 import copy
 from torch.nn.utils.parametrize import is_parametrized
 
-def load_cifar10(batch_size):
-     # Initialize transforms
-    train_transforms = v2.Compose([
-        v2.ToImage(),
-        v2.ToDtype(torch.float32, scale=True),
-        v2.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
-        v2.RandomAffine(
-            degrees=5,           # Rotate by a maximum of 5 degrees
-            translate=(0.05, 0.05) # Shift by a maximum of 5%
-        ),
-        # v2.RandomCrop((32, 32), padding=8),
-        # v2.RandomHorizontalFlip(),
-        # v2.RandomApply([
-            # v2.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1)
-        # ], p=0.8),
-        # shift et jitter
-        # v2.RandAugment(),
-        # v2.RandomErasing(p=0.5, scale=(0.02, 0.1), ratio=(0.3, 3.3), value='random')
-        v2.Normalize((0.49139968, 0.48215827, 0.44653124),
-                     (0.225, 0.225, 0.225)),
-    ])
-    test_transforms = v2.Compose([
-        v2.ToImage(),
-        v2.ToDtype(torch.float32, scale=True),
-        v2.Normalize((0.49139968, 0.48215827, 0.44653124),
-                     (0.225, 0.225, 0.225)),
-    ])
+import torch
+from torchvision.transforms import v2
+from torchvision import datasets
+from torch.utils.data import DataLoader
 
-    # Split dataset into train, calibration, and test sets
+def load_cifar10(batch_size, aug_level='medium'):
+    """
+    Args:
+        batch_size (int): Size of the batch.
+        aug_level (str): Level of augmentation ('none', 'light', 'medium', 'heavy').
+    """
+    
+    # 1. Define Common Base and Normalization
+    # These are applied to all levels and the test set
+    base_transforms = [
+        v2.ToImage(),
+        v2.ToDtype(torch.float32, scale=True),
+    ]
+    
+    norm_transform = v2.Normalize(
+        mean=(0.49139968, 0.48215827, 0.44653124),
+        std=(0.225, 0.225, 0.225)
+    )
+
+    # 2. Select Augmentation Strategy
+    augmentations = []
+
+    if aug_level == 'none':
+        # No extra augmentations
+        pass
+
+    elif aug_level == 'light':
+        # Standard CIFAR-10 augmentations (Crop + Flip)
+        augmentations = [
+            v2.RandomCrop((32, 32), padding=4),
+            v2.RandomHorizontalFlip(p=0.5),
+        ]
+
+    elif aug_level == 'medium':
+        # Your specific implementation (Affine + ColorJitter)
+        augmentations = [
+            v2.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
+            v2.RandomAffine(
+                degrees=5,           # Rotate by a maximum of 5 degrees
+                translate=(0.05, 0.05) # Shift by a maximum of 5%
+            ),
+        ]
+
+    elif aug_level == 'heavy':
+        # State-of-the-art style (RandAugment + Erasing)
+        augmentations = [
+            v2.RandAugment(num_ops=2, magnitude=9),
+            v2.RandomHorizontalFlip(), 
+            v2.RandomErasing(p=0.25, scale=(0.02, 0.1), ratio=(0.3, 3.3), value='random')
+        ]
+    
+    else:
+        raise ValueError(f"Invalid aug_level: {aug_level}. Choose 'none', 'light', 'medium', or 'heavy'.")
+
+    # 3. Compose Transforms
+    train_transforms = v2.Compose(base_transforms + augmentations + [norm_transform])
+    
+    test_transforms = v2.Compose(base_transforms + [norm_transform])
+
+    # 4. Load Datasets
     train_dataset = datasets.CIFAR10(
-        root='./data',
-        train=True,
-        transform=train_transforms,
-        download=True
+        root='./data', train=True, transform=train_transforms, download=True
     )
     
     test_dataset = datasets.CIFAR10(
-        root='./data', 
-        train=False, 
-        transform=test_transforms,
-        download=True
+        root='./data', train=False, transform=test_transforms, download=True
     )
 
-    # Create data loaders
+    # 5. Create Loaders
     train_loader = DataLoader(
-        dataset=train_dataset,
-        batch_size=batch_size,
-        shuffle=True
+        dataset=train_dataset, batch_size=batch_size, shuffle=True, num_workers=2
     )
 
     test_loader = DataLoader(
-        dataset=test_dataset,
-        batch_size=batch_size,
-        shuffle=False
+        dataset=test_dataset, batch_size=batch_size, shuffle=False, num_workers=2
     )
-    return train_loader,  test_loader
+
+    return train_loader, test_loader
 
 def load_mnist(batch_size):
     train_set = datasets.MNIST(
@@ -96,11 +123,11 @@ def load_mnist(batch_size):
     test_loader = torch.utils.data.DataLoader(test_set, batch_size)
     return train_loader, test_loader
 
-def load_dataset(name, batch_size):
+def load_dataset(name, batch_size, aug_level = 'medium'):
     if name=="mnist":
         train_loader, test_loader = load_mnist(batch_size)
     elif name=="cifar10":
-        train_loader, test_loader = load_cifar10(batch_size)
+        train_loader, test_loader = load_cifar10(batch_size, aug_level)
     else :
         raise ValueError(f"Unexpected dataset: {name}")
     return train_loader, test_loader
@@ -197,11 +224,9 @@ def load_model(args, model_zoo, device):
     # Load the saved state dictionary
     model.load_state_dict(torch.load(args.model_path, map_location=device))
     # model.load_state_dict(torch.load("models/cifar10_convsmall.pth", map_location=device))
-    model = vanilla_export(model)
     model.to(device)
     model.eval() # Set model to evaluation mode
     return model
-
 
 def convert_lipschitz_constant(L_2, norm, input_dim):
     """
@@ -315,20 +340,13 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-import os # Imported to check file name
 
-def create_robustness_plot_v2(filepath='results/results.csv', output_filename='robust_accuracy_vs_epsilon_colored.png'):
+def create_robustness_plot_v3(filepath, output_filename):
     """
-    Generates a plot of robust accuracy vs. epsilon with a custom, distinct color palette.
-
-    - 'certificate' is blue (distinct).
-    - 'aa' is orangish.
-    - 'pgd' is NOT plotted.
-    - 'sdp' is NOT plotted if 'Linf' is in the filepath.
-    - 'lirpa_betacrown' is NOT plotted if 'L2' is in the filepath.
+    Generates a plot of robust accuracy vs. epsilon.
+    - Extracts model name from filename.
+    - Cleans title by removing trailing 'inf' or '2'.
+    - Renames 'aa' to 'AutoAttack'.
     """
     try:
         df = pd.read_csv(filepath)
@@ -336,49 +354,49 @@ def create_robustness_plot_v2(filepath='results/results.csv', output_filename='r
         print(f"❌ Error: The file '{filepath}' was not found.")
         return
 
-    # Prepare data
+    # --- 1. Extract and Clean Model Name ---
+    filename_with_ext = os.path.basename(filepath)
+    filename_no_ext = os.path.splitext(filename_with_ext)[0]
+    
+    # Split the filename into parts
+    parts = filename_no_ext.split('_')
+    
+    # Check the last part and remove it if it is 'inf' or '2'
+    if parts and parts[-1].lower() in ['inf', '2']:
+        parts.pop()
+        
+    # Join back with spaces for the plot title
+    model_title_text = " ".join(parts)
+
+    # --- 2. Prepare Data ---
     df = df.sort_values(by='epsilon').reset_index(drop=True)
     
-    # --- ✨ MODIFIED: 'pgd' removed from the base plot order ---
+    # Base order
     plot_order = ['certificate', 'aa', 'lirpa_alphacrown', 'lirpa_betacrown', 'sdp']
     
-    # --- ✨ NEW: Conditional Filtering based on filename ---
-    # Start with the base list of methods to consider
     methods_to_plot = list(plot_order) 
-
-    # Conditionally remove methods based on the filepath
-    # We use os.path.basename to just check the filename, not the whole path
-    filename_only = os.path.basename(filepath)
     
-    if 'Linf' in filename_only:
+    # Conditional logic based on the FULL filename string (so logic remains robust)
+    if 'Linf' in filename_no_ext:
         if 'sdp' in methods_to_plot:
             methods_to_plot.remove('sdp')
-            print("ℹ️ 'Linf' found in filename. Removing 'sdp' from the plot.")
-    elif 'L2' in filename_only:
+            print("ℹ️ 'Linf' found. Removing 'sdp'.")
+    elif 'L2' in filename_no_ext:
         if 'lirpa_betacrown' in methods_to_plot:
             methods_to_plot.remove('lirpa_betacrown')
-            print("ℹ️ 'L2' found in filename. Removing 'lirpa_betacrown' from the plot.")
+            print("ℹ️ 'L2' found. Removing 'lirpa_betacrown'.")
             
-    # Filter to only include columns that are in our conditional list AND are actually in the DataFrame
+    # Filter columns
     method_columns = [col for col in methods_to_plot if col in df.columns and col != 'epsilon' and not col.startswith('time_')]
 
-    # --- ✨ MODIFIED: Custom Color Mapping (removed 'pgd') ---
+    # --- 3. Color Mapping ---
     color_map = {}
-    
-    # 1. Assign a distinct color to 'certificate'
     if 'certificate' in method_columns:
-        color_map['certificate'] = '#1f77b4'  # A standard Matplotlib blue
-
-    # 2. Assign orangish color to 'aa'
+        color_map['certificate'] = '#1f77b4'  # Blue
     if 'aa' in method_columns:
-        color_map['aa'] = '#ff7f0e'   # Matplotlib orange
+        color_map['aa'] = '#ff7f0e'   # Orange
 
-    # 3. Assign distinct colors for the remaining methods
-    other_methods_colors = [
-        '#9467bd', # tab10 purple
-        '#8c564b', # tab10 brown
-        '#e377c2'  # tab10 pink
-    ]
+    other_methods_colors = ['#9467bd', '#8c564b', '#e377c2']
     other_idx = 0
     for method in method_columns:
         if method not in color_map:
@@ -386,132 +404,36 @@ def create_robustness_plot_v2(filepath='results/results.csv', output_filename='r
                 color_map[method] = other_methods_colors[other_idx]
                 other_idx += 1
             else:
-                # Fallback color if we run out
-                color_map[method] = '#7f7f7f' # tab10 grey
+                color_map[method] = '#7f7f7f'
 
-
-    # Create the plot
-    sns.set_theme(style="whitegrid")
-    plt.figure(figsize=(12, 8))
+    # --- 4. Plotting ---
+    sns.set_theme(style="whitegrid", context="talk")
+    plt.figure(figsize=(14, 9))
 
     for method in method_columns:
-        # Use the color assigned to each method in our new map
+        # Rename 'aa' to 'AutoAttack' for the label
+        label_name = 'AutoAttack' if method == 'aa' else method
+        
         plt.plot(df['epsilon'], df[method], 
                  marker='o', 
                  linestyle='-', 
-                 label=method, 
-                 color=color_map.get(method, '#000000'), # Use .get for safety
-                 linewidth=2)
+                 label=label_name, 
+                 color=color_map.get(method, '#000000'), 
+                 linewidth=3,
+                 markersize=10)
 
-    # Style the plot
-    plt.title('Robust Accuracy vs. Epsilon for Various Methods', fontsize=16, weight='bold')
-    plt.xlabel('Epsilon ($ε$)', fontsize=14)
-    plt.ylabel('Robust Accuracy', fontsize=14)
-    plt.legend(title='Verification Method', fontsize=10)
-    plt.grid(True, which='both', linestyle='--', linewidth=0.5)
+    plt.title(f"Robust Accuracy vs. Epsilon\nModel: {model_title_text}", fontsize=22, weight='bold', pad=20)
+    plt.xlabel('Epsilon ($ε$)', fontsize=18, labelpad=10)
+    plt.ylabel('Robust Accuracy', fontsize=18, labelpad=10)
+    plt.legend(title='Verification Method', title_fontsize=16, fontsize=14, loc='best', frameon=True, shadow=True)
+    plt.grid(True, which='both', linestyle='--', linewidth=1, alpha=0.7)
     plt.tight_layout()
     
-    # Save the plot
     plt.savefig(output_filename)
-    print(f"✅ Plot successfully saved as '{output_filename}' with specified methods.")
+    print(f"✅ Plot saved as '{output_filename}' (Title: {model_title_text})")
     plt.close()
-
-# --- Example Usage ---
-# create_robustness_plot(filepath='results/Linf_results.csv', output_filename='Linf_plot.png')
-# create_robustness_plot(filepath='results/L2_data.csv', output_filename='L2_plot.png')
-# create_robustness_plot(filepath='results/other_results.csv', output_filename='other_plot.png')
-
-def create_robustness_plot(filepath='results/results.csv', output_filename='robust_accuracy_vs_epsilon_colored.png'):
-    """
-    Generates a plot of robust accuracy vs. epsilon with a custom, distinct color palette.
-
-    - 'certificate' is blue (distinct).
-    - 'pgd' and 'aa' are reddish/orangish (similar to each other).
-    - Other methods have distinct colors.
-    """
-    try:
-        df = pd.read_csv(filepath)
-    except FileNotFoundError:
-        print(f"❌ Error: The file '{filepath}' was not found.")
-        return
-
-    # Prepare data
-    df = df.sort_values(by='epsilon').reset_index(drop=True)
-    
-    # Define the order of columns for plotting and color assignment
-    # This ensures 'certificate' is handled first, then 'pgd'/'aa', then others
-    plot_order = ['certificate', 'pgd', 'aa', 'lirpa_alphacrown', 'lirpa_betacrown', 'sdp']
-    
-    # Filter to only include columns that are in plot_order and are actually in the DataFrame
-    method_columns = [col for col in plot_order if col in df.columns and col != 'epsilon' and not col.startswith('time_')]
-
-    # --- ✨ NEW: Custom Color Mapping for precise control ---
-    color_map = {}
-    
-    # 1. Assign a distinct color to 'certificate'
-    color_map['certificate'] = '#1f77b4'  # A standard Matplotlib blue
-
-    # 2. Assign similar reddish/orangish colors to 'pgd' and 'aa'
-    color_map['pgd'] = '#d62728'  # Matplotlib red
-    color_map['aa'] = '#ff7f0e'   # Matplotlib orange
-
-    # 3. Assign distinct colors for the remaining methods using a palette
-    #    We'll skip the colors already used by 'tab10' for the first three items.
-    #    The 'tab10' palette has 10 distinct colors. We'll pick from the unused ones.
-    default_palette = sns.color_palette('tab10', n_colors=10)
-    
-    # Get colors from the default palette that haven't been "claimed" by certificate, pgd, aa
-    # Skip the first few default colors (blue, orange, green, red, purple) to ensure distinctness
-    # and map them to the remaining methods.
-    
-    # Let's manually assign specific indices from tab10 or custom hex for better control
-    # Or simply iterate through the palette for remaining methods, skipping those already assigned
-    
-    # Start filling other methods from a specific point in the palette
-    # For instance, we'll pick from 'tab10' starting at index 4 (purple, brown, pink, grey, olive, cyan)
-    
-    other_methods_colors = [
-        '#9467bd', # tab10 purple
-        '#8c564b', # tab10 brown
-        '#e377c2'  # tab10 pink
-    ]
-    other_idx = 0
-    for method in method_columns:
-        if method not in color_map:
-            if other_idx < len(other_methods_colors):
-                color_map[method] = other_methods_colors[other_idx]
-                other_idx += 1
-            else:
-                # Fallback if there are more methods than predefined distinct colors
-                # (unlikely with this problem but good practice)
-                color_map[method] = default_palette[len(color_map) % len(default_palette)]
-
-
-    # Create the plot
-    sns.set_theme(style="whitegrid")
-    plt.figure(figsize=(12, 8))
-
-    for method in method_columns:
-        # Use the color assigned to each method in our new map
-        plt.plot(df['epsilon'], df[method], 
-                 marker='o', 
-                 linestyle='-', 
-                 label=method, 
-                 color=color_map[method], # Use the defined color
-                 linewidth=2)
-
-    # Style the plot
-    plt.title('Robust Accuracy vs. Epsilon for Various Methods', fontsize=16, weight='bold')
-    plt.xlabel('Epsilon ($ε$)', fontsize=14)
-    plt.ylabel('Robust Accuracy', fontsize=14)
-    plt.legend(title='Verification Method', fontsize=10)
-    plt.grid(True, which='both', linestyle='--', linewidth=0.5)
-    plt.tight_layout()
-    
-    # Save the plot
-    plt.savefig(output_filename)
-    print(f"✅ Plot successfully saved as '{output_filename}' with refined colors.")
-    plt.close()
+# Example Usage:
+# create_robustness_plot_v3(filepath='results/results_Linf.csv', model_name="ResNet-18 (CIFAR-10)")
 
 
 def compute_certificates_CRA(images, model, epsilon, correct_indices, norm='2', L=1, return_robust_points=False):
@@ -819,6 +741,7 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
         If return_robust_points is True:
             (cra, mean_time_per_image, robust_indices)
     """
+
     device = next(model.parameters()).device
     total_num_images = len(images)
     model.eval()
@@ -864,10 +787,10 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
         # --- Set up BoundedTensor and specification for the current batch ---
         
         if norm == 'inf':
-            ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon, x_u=x_U, x_L=x_L)
+            ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon, x_U=x_U, x_L=x_L)
         else:
             #FIXME add lb, ub to inf case 
-            ptb = PerturbationLpNorm(norm=norm, eps=epsilon)
+            ptb = PerturbationLpNorm(norm=norm, eps=epsilon, x_U=x_U, x_L=x_L)
 
         bounded_input = BoundedTensor(batch_images, ptb)
         

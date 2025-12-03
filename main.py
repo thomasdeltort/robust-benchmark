@@ -44,38 +44,40 @@ from project_utils import *
 # A list of supported model architectures. The `--model_name` argument must match one of these.
 
 model_zoo = {
-     # --- Standard, non-Lipschitz constrained models ---
-    "MNIST_MLP": MNIST_MLP,
-    "MNIST_ConvSmall": MNIST_ConvSmall,
-    "MNIST_ConvLarge": MNIST_ConvLarge,
-    "CIFAR10_CNN_A": CIFAR10_CNN_A,
-    "CIFAR10_CNN_B": CIFAR10_CNN_B,
-    "CIFAR10_CNN_C": CIFAR10_CNN_C,
-    "CIFAR10_ConvSmall": CIFAR10_ConvSmall,
-    "CIFAR10_ConvDeep": CIFAR10_ConvDeep,
-    "CIFAR10_ConvLarge": CIFAR10_ConvLarge,
+    # --- Standard, non-Lipschitz constrained models ---
+    "MNIST_MLP": MNIST_MLP if 'MNIST_MLP' in globals() else None,
+    "MNIST_ConvSmall": MNIST_ConvSmall if 'MNIST_ConvSmall' in globals() else None,
+    "MNIST_ConvLarge": MNIST_ConvLarge if 'MNIST_ConvLarge' in globals() else None,
+    "CIFAR10_CNN_A": CIFAR10_CNN_A if 'CIFAR10_CNN_A' in globals() else None,
+    "CIFAR10_CNN_B": CIFAR10_CNN_B if 'CIFAR10_CNN_B' in globals() else None,
+    "CIFAR10_CNN_C": CIFAR10_CNN_C if 'CIFAR10_CNN_C' in globals() else None,
+    "CIFAR10_ConvSmall": CIFAR10_ConvSmall if 'CIFAR10_ConvSmall' in globals() else None,
+    "CIFAR10_ConvDeep": CIFAR10_ConvDeep if 'CIFAR10_ConvDeep' in globals() else None,
+    "CIFAR10_ConvLarge": CIFAR10_ConvLarge if 'CIFAR10_ConvLarge' in globals() else None,
 
     # --- 1-Lipschitz models (Spectral Normalization) ---
-    "MLP_MNIST_1_LIP": MLP_MNIST_1_LIP,
-    "ConvSmall_MNIST_1_LIP": ConvSmall_MNIST_1_LIP,
-    "ConvLarge_MNIST_1_LIP": ConvLarge_MNIST_1_LIP,
-    "CNNA_CIFAR10_1_LIP": CNNA_CIFAR10_1_LIP,
-    "CNNB_CIFAR10_1_LIP": CNNB_CIFAR10_1_LIP,
-    "CNNC_CIFAR10_1_LIP": CNNC_CIFAR10_1_LIP,
-    "ConvSmall_CIFAR10_1_LIP": ConvSmall_CIFAR10_1_LIP,
-    "ConvDeep_CIFAR10_1_LIP": ConvDeep_CIFAR10_1_LIP,
-    "ConvLarge_CIFAR10_1_LIP": ConvLarge_CIFAR10_1_LIP,
+    "MLP_MNIST_1_LIP": MLP_MNIST_1_LIP if 'MLP_MNIST_1_LIP' in globals() else None,
+    "ConvSmall_MNIST_1_LIP": ConvSmall_MNIST_1_LIP if 'ConvSmall_MNIST_1_LIP' in globals() else None,
+    "ConvLarge_MNIST_1_LIP": ConvLarge_MNIST_1_LIP if 'ConvLarge_MNIST_1_LIP' in globals() else None,
+    "CNNA_CIFAR10_1_LIP": CNNA_CIFAR10_1_LIP if 'CNNA_CIFAR10_1_LIP' in globals() else None,
+    "CNNB_CIFAR10_1_LIP": CNNB_CIFAR10_1_LIP if 'CNNB_CIFAR10_1_LIP' in globals() else None,
+    "CNNC_CIFAR10_1_LIP": CNNC_CIFAR10_1_LIP if 'CNNC_CIFAR10_1_LIP' in globals() else None,
+    "ConvSmall_CIFAR10_1_LIP": ConvSmall_CIFAR10_1_LIP if 'ConvSmall_CIFAR10_1_LIP' in globals() else None,
+    "ConvDeep_CIFAR10_1_LIP": ConvDeep_CIFAR10_1_LIP if 'ConvDeep_CIFAR10_1_LIP' in globals() else None,
+    "ConvLarge_CIFAR10_1_LIP": ConvLarge_CIFAR10_1_LIP if 'ConvLarge_CIFAR10_1_LIP' in globals() else None,
 
     # --- 1-Lipschitz models (GNP technique) ---
-    "MLP_MNIST_1_LIP_GNP": MLP_MNIST_1_LIP_GNP,
-    "ConvSmall_MNIST_1_LIP_GNP": ConvSmall_MNIST_1_LIP_GNP,
-    "ConvLarge_MNIST_1_LIP_GNP": ConvLarge_MNIST_1_LIP_GNP,
-    "CNNA_CIFAR10_1_LIP_GNP": CNNA_CIFAR10_1_LIP_GNP,
-    "CNNB_CIFAR10_1_LIP_GNP": CNNB_CIFAR10_1_LIP_GNP,
-    "CNNC_CIFAR10_1_LIP_GNP": CNNC_CIFAR10_1_LIP_GNP,
-    "ConvSmall_CIFAR10_1_LIP_GNP": ConvSmall_CIFAR10_1_LIP_GNP,
-    "ConvDeep_CIFAR10_1_LIP_GNP": ConvDeep_CIFAR10_1_LIP_GNP,
-    "ConvLarge_CIFAR10_1_LIP_GNP": ConvLarge_CIFAR10_1_LIP_GNP,
+    "MLP_MNIST_1_LIP_GNP": MLP_MNIST_1_LIP_GNP if 'MLP_MNIST_1_LIP_GNP' in globals() else None,
+    "ConvSmall_MNIST_1_LIP_GNP": ConvSmall_MNIST_1_LIP_GNP if 'ConvSmall_MNIST_1_LIP_GNP' in globals() else None,
+    "ConvLarge_MNIST_1_LIP_GNP": ConvLarge_MNIST_1_LIP_GNP if 'ConvLarge_MNIST_1_LIP_GNP' in globals() else None,
+    "CNNA_CIFAR10_1_LIP_GNP": CNNA_CIFAR10_1_LIP_GNP if 'CNNA_CIFAR10_1_LIP_GNP' in globals() else None,
+    "CNNB_CIFAR10_1_LIP_GNP": CNNB_CIFAR10_1_LIP_GNP if 'CNNB_CIFAR10_1_LIP_GNP' in globals() else None,
+    "CNNC_CIFAR10_1_LIP_GNP": CNNC_CIFAR10_1_LIP_GNP if 'CNNC_CIFAR10_1_LIP_GNP' in globals() else None,
+    "ConvSmall_CIFAR10_1_LIP_GNP": ConvSmall_CIFAR10_1_LIP_GNP if 'ConvSmall_CIFAR10_1_LIP_GNP' in globals() else None,
+    "ConvDeep_CIFAR10_1_LIP_GNP": ConvDeep_CIFAR10_1_LIP_GNP if 'ConvDeep_CIFAR10_1_LIP_GNP' in globals() else None,
+    "ConvLarge_CIFAR10_1_LIP_GNP": ConvLarge_CIFAR10_1_LIP_GNP if 'ConvLarge_CIFAR10_1_LIP_GNP' in globals() else None,
+    "VGG13_1_LIP_GNP_CIFAR10" : VGG13_1_LIP_GNP_CIFAR10,
+    "VGG19_1_LIP_GNP_CIFAR10" : VGG19_1_LIP_GNP_CIFAR10,
 }
 
 
@@ -159,21 +161,24 @@ def main():
 
     # Note from author: It seems that the radius obtained should be rescaled to be comparable to epsilon.
     # This is a crucial step to ensure fair comparison across different data normalizations.
-    # _, certificates_cra, time_cra = compute_certificates_CRA(images, model, epsilon_rescaled, clean_indices, norm = norm, L = L)
-    # print(f"  - Certified Robustness (CRA): {certificates_cra:.2f}% | Time: {time_cra:.4f}s")
-    certificates_cra, time_cra = 0,0
+    _, certificates_cra, time_cra = compute_certificates_CRA(images, model, epsilon_rescaled, clean_indices, norm = norm, L = L)
+    print(f"  - Certified Robustness (CRA): {certificates_cra:.2f}% | Time: {time_cra:.4f}s")
+    # certificates_cra, time_cra = 0,0
     # pgd_era, time_pgd = compute_pgd_era_and_time(images, targets, model, args.epsilon, clean_indices, norm = norm, dataset_name=args.dataset)
     # print(f"  - Empirical Robustness (PGD): {pgd_era:.2f}% | Time: {time_pgd:.4f}s")
     pgd_era, time_pgd = 0,0
-    # aa_era, time_aa = compute_autoattack_era_and_time(images, targets, model, args.epsilon, clean_indices, norm = norm, dataset_name=args.dataset)
-    # print(f"  - Empirical Robustness (AutoAttack): {aa_era:.2f}% | Time: {time_aa:.4f}s")
-    aa_era, time_aa = 0,0
+    aa_era, time_aa = compute_autoattack_era_and_time(images, targets, model, args.epsilon, clean_indices, norm = norm, dataset_name=args.dataset)
+    print(f"  - Empirical Robustness (AutoAttack): {aa_era:.2f}% | Time: {time_aa:.4f}s")
+    # aa_era, time_aa = 0,0
 
     if "mnist" in args.dataset.lower():
         # MNIST: Raw range is usually [0, 1] with no mean/std normalization applied
         # We create tensors of shape (1, 1, 1, 1) for broadcasting
         x_L = torch.tensor(0.0, device=device).view(1, 1, 1, 1)
         x_U = torch.tensor(1.0, device=device).view(1, 1, 1, 1)
+
+        x_L = torch.tensor(0.0, device=device).expand(1, 1, 28, 28)
+        x_U = torch.tensor(1.0, device=device).expand(1, 1, 28, 28)
 
     elif "cifar" in args.dataset.lower():
         # CIFAR: Range [0, 1] transformed by (image - mean) / std
@@ -182,15 +187,18 @@ def main():
         STD = torch.tensor([0.225, 0.225, 0.225], device=device).view(1, 3, 1, 1)
        
         # Calculate normalized bounds
-        x_L = (0 - MEANS) / STD
-        x_U = (1 - MEANS) / STD
+        # x_L = ((0 - MEANS) / STD)
+        # x_U = ((1 - MEANS) / STD)
+        x_L = ((0 - MEANS) / STD).expand(1, 3, 32, 32)
+        x_U = ((1 - MEANS) / STD).expand(1, 3, 32, 32)
 
     else:
         raise ValueError(f"Bounds not defined for dataset: {args.dataset}")
     
-    # lirpa_alpha_vra, time_lirpa_alpha = compute_alphacrown_vra_and_time(images, targets, model, epsilon_rescaled, clean_indices, norm = args.norm, x_U=x_U, x_L=x_L)
-    # print(f"  - Certified Robustness (LIRPA α-CROWN): {lirpa_alpha_vra:.2f}% | Time: {time_lirpa_alpha:.4f}s")
-    lirpa_alpha_vra, time_lirpa_alpha = 0, 0
+    lirpa_alpha_vra, time_lirpa_alpha = compute_alphacrown_vra_and_time(images, targets, model, epsilon_rescaled, clean_indices, norm = args.norm, x_U=x_U, x_L=x_L)
+    # lirpa_alpha_vra, time_lirpa_alpha = compute_alphacrown_vra_and_time(images, targets, model, epsilon_rescaled, clean_indices, norm = args.norm)
+    print(f"  - Certified Robustness (LIRPA α-CROWN): {lirpa_alpha_vra:.2f}% | Time: {time_lirpa_alpha:.4f}s")
+    # lirpa_alpha_vra, time_lirpa_alpha = 0, 0
     if norm =='inf':
         if args.dataset == 'mnist':
             config_file = 'mnist_cnn_a_adv.yaml'
@@ -200,10 +208,10 @@ def main():
         print(f"  - Certified Robustness (LIRPA β-CROWN): {lirpa_beta_vra:.2f}% | Time: {time_lirpa_beta:.4f}s")
         # lirpa_beta_vra, time_lirpa_beta = 0, 0
         sdp_crown_vra, time_sdp = 0, 0
-    # elif norm == '2':
-    #     sdp_crown_vra, time_sdp = compute_sdp_crown_vra(images, targets, model, epsilon_rescaled, clean_indices, device, classes, args, x_U=x_U, x_L=x_L)
-    #     print(f"  - Certified Robustness (SDP-CROWN): {sdp_crown_vra:.2f}% | Time: {time_sdp:.4f}s")
-        sdp_crown_vra, time_sdp = 0, 0
+    elif norm == '2':
+        sdp_crown_vra, time_sdp = compute_sdp_crown_vra(images, targets, model, epsilon_rescaled, clean_indices, device, classes, args, x_U=x_U, x_L=x_L)
+        print(f"  - Certified Robustness (SDP-CROWN): {sdp_crown_vra:.2f}% | Time: {time_sdp:.4f}s")
+        # sdp_crown_vra, time_sdp = 0, 0
         lirpa_beta_vra, time_lirpa_beta = 0, 0
     # --- 5. Store and Save Results ---
     # The results are collected in a dictionary. The keys will become the CSV header.
