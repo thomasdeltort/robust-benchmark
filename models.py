@@ -20,50 +20,27 @@ class GroupSort_General(nn.Module):
 
     The total number of features (product of dimensions after the batch dim) must be even.
     """
-    def __init__(self):
+    def __init__(self, axis=1):
         super(GroupSort_General, self).__init__()
+        self.axis = axis
         self.relu = nn.ReLU()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        original_shape = x.shape
-        batch_size = original_shape[0]
-        
-        num_features = np.prod(original_shape[1:])
-        
-        if num_features % 2 != 0:
-            raise ValueError(
-                f"The total number of features must be even, but got {num_features} "
-                f"for shape {original_shape}."
-            )
-
-        # Utiliser .reshape() pour gérer les tenseurs non-contigus
-        x_flat = x.reshape(batch_size, -1)
-
-        # --- Logique de tri ---
-        
-        # .reshape() est aussi plus sûr ici, par précaution
-        reshaped_x = x_flat.reshape(batch_size, -1, 2)
-        
-        x1s = reshaped_x[..., 0]
-        x2s = reshaped_x[..., 1]
-        
-        diff = x2s - x1s
+        dim = self.axis if self.axis >= 0 else x.dim() + self.axis
+        if x.shape[dim] % 2 != 0: raise ValueError(f"Size of axis {dim} must be divisible by 2.")
+        new_shape = (x.shape[:dim] + (x.shape[dim] // 2, 2) + x.shape[dim + 1 :])
+        reshaped_x = x.view(new_shape)
+        split_dim = dim + 1
+        a = reshaped_x.select(split_dim, 0)
+        b = reshaped_x.select(split_dim, 1)
+        # ReLU Logic
+        diff = b - a
         relu_diff = self.relu(diff)
-        
-        y1 = x2s - relu_diff
-        y2 = x1s + relu_diff
-        
-        sorted_pairs = torch.stack((y1, y2), dim=2)
-        
-        # .reshape() est aussi plus sûr ici
-        sorted_flat = sorted_pairs.reshape(batch_size, -1)
+        y_max = a + relu_diff
+        y_min = b - relu_diff
+        sorted_pairs = torch.stack((y_min, y_max), dim=split_dim)
+        return sorted_pairs.view(x.shape)
 
-        # --- Fin de la logique ---
-
-        # Restaurer la forme originale en utilisant .reshape()
-        output = sorted_flat.reshape(original_shape)
-        
-        return output
     
     
 class GroupSort2Optimized(nn.Module):
@@ -72,21 +49,18 @@ class GroupSort2Optimized(nn.Module):
     def __init__(self):
         super(GroupSort2Optimized, self).__init__()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        original_shape = x.shape
-        batch_size = original_shape[0]
-        num_features = np.prod(original_shape[1:])
-        if num_features % 2 != 0: raise ValueError("Total features must be even.")
-        x_flat = x.reshape(batch_size, -1)
-        reshaped_x = x_flat.reshape(batch_size, -1, 2)
-        x1s = reshaped_x[..., 0]
-        x2s = reshaped_x[..., 1]
-        y2_max = torch.max(x1s, x2s) # <--- THIS IS THE UNSUPPORTED OPERATION
-        y1_min = x1s + x2s - y2_max
+        N, C, H, W = x.shape
+        x_reshaped = x.view(N, C // 2, 2, H, W)
+        x1s = x_reshaped[:, :, 0, :, :]
+        x2s = x_reshaped[:, :, 1, :, :]
+        # Max + Sum Preservation Logic
+        y2_max = torch.max(x1s, x2s)
+        y1_min = (x1s + x2s) - y2_max
         sorted_pairs = torch.stack((y1_min, y2_max), dim=2)
-        sorted_flat = sorted_pairs.reshape(batch_size, -1)
-        output = sorted_flat.reshape(original_shape)
-        return output
+        return sorted_pairs.view(N, C, H, W)
+
     
+
 
 def MNIST_MLP():
 	model = nn.Sequential(

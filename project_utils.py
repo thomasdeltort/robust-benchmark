@@ -720,7 +720,7 @@ def build_C(label, classes):
     
     return C
 
-def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indices, batch_size=1, norm=2, return_robust_points=False, x_U=None, x_L=None):
+def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indices, batch_size=8, norm=2, return_robust_points=False, x_U=None, x_L=None):
     """
     Computes Certified Robust Accuracy (CRA) using Alpha-Crown in batches to manage memory,
     and measures the mean verification time per image.
@@ -787,10 +787,9 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
         # --- Set up BoundedTensor and specification for the current batch ---
         
         if norm == 'inf':
-            ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon, x_U=x_U, x_L=x_L)
+            ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon, x_U=x_U.expand(batch_size, -1, -1, -1), x_L=x_L.expand(batch_images.shape[0], -1, -1, -1))
         else:
-            #FIXME add lb, ub to inf case 
-            ptb = PerturbationLpNorm(norm=norm, eps=epsilon, x_U=x_U, x_L=x_L)
+            ptb = PerturbationLpNorm(norm=norm, eps=epsilon, x_U=x_U.expand(batch_size, -1, -1, -1), x_L=x_L.expand(batch_images.shape[0], -1, -1, -1))
 
         bounded_input = BoundedTensor(batch_images, ptb)
         
