@@ -241,9 +241,10 @@ def main(args):
     # --- C. Optimizer & Loss ---
     optimizer = torch.optim.Adam(lr=args.lr, params=model.parameters())
     
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(
-        optimizer, milestones=[args.epochs//3, 2*args.epochs//3], gamma=0.2
-    )
+    # scheduler = torch.optim.lr_scheduler.MultiStepLR(
+    #     optimizer, milestones=[args.epochs//3, 2*args.epochs//3], gamma=0.2
+    # )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     
     if args.criterion == 'HKR':
         criterion = HKRMultiLossLSE(alpha=args.alpha, temperature=args.temperature, penalty=0.5, margin=1.0)
