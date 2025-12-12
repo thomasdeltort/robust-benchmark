@@ -29,7 +29,7 @@ import boto3
 import os
 from botocore.exceptions import NoCredentialsError, ClientError
 
-def download_s3_folder(bucket_name, s3_folder, local_dir):
+def download_s3_folder(bucket_name="tdrobustbucket", s3_folder="lip_models", local_dir="./models"):
     """
     Downloads an S3 folder to a local directory.
     """
@@ -857,9 +857,9 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
         # --- Set up BoundedTensor and specification for the current batch ---
         
         if norm == 'inf':
-            ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon, x_U=x_U.expand(batch_size, -1, -1, -1), x_L=x_L.expand(batch_images.shape[0], -1, -1, -1))
+            ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon, x_U=x_U.expand(batch_images.shape[0], -1, -1, -1), x_L=x_L.expand(batch_images.shape[0], -1, -1, -1))
         else:
-            ptb = PerturbationLpNorm(norm=norm, eps=epsilon, x_U=x_U.expand(batch_size, -1, -1, -1), x_L=x_L.expand(batch_images.shape[0], -1, -1, -1))
+            ptb = PerturbationLpNorm(norm=norm, eps=epsilon, x_U=x_U.expand(batch_images.shape[0], -1, -1, -1), x_L=x_L.expand(batch_images.shape[0], -1, -1, -1))
 
         bounded_input = BoundedTensor(batch_images, ptb)
         
@@ -1105,3 +1105,6 @@ from sdp_crown import verified_sdp_crown
 
 def compute_sdp_crown_vra(dataset, labels, model, radius, clean_output, device, classes, args, return_robust_points=False, x_U=None, x_L=None):
     return verified_sdp_crown(dataset, labels, model, radius, clean_output, device, classes, args, return_robust_points=return_robust_points, x_U=x_U, x_L=x_L)
+
+if __name__ == '__main__':
+    download_s3_folder()
