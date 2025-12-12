@@ -9,16 +9,44 @@ import numpy as np
 # Note: This python file present every model we use for benchmarking. 
 # These models correspond to all the model architectures from Wang et al. (2021) & Leino et al. (2021)
 # This version uses ReLU as the activation function.
+# class GroupSort_General(nn.Module):
+#     """
+#     A universal, auto_lirpa-compatible PyTorch module that sorts pairs of features.
+
+#     This module can handle inputs of any shape (e.g., 2D, 4D). It works by 
+#     temporarily flattening the feature dimensions, applying the sort logic in a 
+#     verifier-friendly way (with ReLU on a 2D tensor), and then reshaping the 
+#     output back to the original input shape.
+
+#     The total number of features (product of dimensions after the batch dim) must be even.
+#     """
+#     def __init__(self, axis=1):
+#         super(GroupSort_General, self).__init__()
+#         self.axis = axis
+#         self.relu = nn.ReLU()
+
+#     def forward(self, x: torch.Tensor) -> torch.Tensor:
+#         dim = self.axis if self.axis >= 0 else x.dim() + self.axis
+#         if x.shape[dim] % 2 != 0: raise ValueError(f"Size of axis {dim} must be divisible by 2.")
+#         new_shape = (x.shape[:dim] + (x.shape[dim] // 2, 2) + x.shape[dim + 1 :])
+#         reshaped_x = x.view(new_shape)
+#         split_dim = dim + 1
+#         a = reshaped_x.select(split_dim, 0)
+#         b = reshaped_x.select(split_dim, 1)
+#         # ReLU Logic
+#         diff = b - a
+#         relu_diff = self.relu(diff)
+#         y_max = a + relu_diff
+#         y_min = b - relu_diff
+#         sorted_pairs = torch.stack((y_min, y_max), dim=split_dim)
+#         return sorted_pairs.reshape(x.shape)
 class GroupSort_General(nn.Module):
     """
-    A universal, auto_lirpa-compatible PyTorch module that sorts pairs of features.
-
-    This module can handle inputs of any shape (e.g., 2D, 4D). It works by 
-    temporarily flattening the feature dimensions, applying the sort logic in a 
-    verifier-friendly way (with ReLU on a 2D tensor), and then reshaping the 
-    output back to the original input shape.
-
-    The total number of features (product of dimensions after the batch dim) must be even.
+    Applies GroupSort specifically on the channel dimension.
+    
+    It permutes the input from (N, C, ...) to (N, ..., C), applies the 
+    sort logic so that pairs (c_2k, c_2k+1) are sorted, and then restores
+    the original layout.
     """
     def __init__(self, axis=1):
         super(GroupSort_General, self).__init__()
@@ -26,21 +54,72 @@ class GroupSort_General(nn.Module):
         self.relu = nn.ReLU()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        dim = self.axis if self.axis >= 0 else x.dim() + self.axis
-        if x.shape[dim] % 2 != 0: raise ValueError(f"Size of axis {dim} must be divisible by 2.")
-        new_shape = (x.shape[:dim] + (x.shape[dim] // 2, 2) + x.shape[dim + 1 :])
-        reshaped_x = x.view(new_shape)
-        split_dim = dim + 1
-        a = reshaped_x.select(split_dim, 0)
-        b = reshaped_x.select(split_dim, 1)
-        # ReLU Logic
-        diff = b - a
-        relu_diff = self.relu(diff)
-        y_max = a + relu_diff
-        y_min = b - relu_diff
-        sorted_pairs = torch.stack((y_min, y_max), dim=split_dim)
-        return sorted_pairs.view(x.shape)
+        # 1. Permute to Channel Last
+        # We assume the channel is at self.axis (usually 1).
+        # We move that axis to the very end (-1).
+        dims = list(range(x.dim()))
+        # Remove the channel axis from its current spot and append to end
+        channel_dim = dims.pop(self.axis) 
+        dims.append(channel_dim)
+        
+        # permute returns a view, but we usually need contiguous memory for reshaping
+        x_permuted = x.permute(dims).contiguous()
+        
+        # Capture the shape after permutation: (N, D1, D2, ..., C)
+        permuted_shape = x_permuted.shape
+        batch_size = permuted_shape[0]
+        num_channels = permuted_shape[-1]
+        
+        if num_channels % 2 != 0:
+             raise ValueError(
+                f"The number of channels must be even, but got {num_channels} "
+                f"for input shape {x.shape}."
+            )
 
+        # 2. Flatten for the sorting logic
+        # We flatten everything except batch. Since Channel is now last,
+        # adjacent elements in this flattened view correspond to adjacent channels.
+        x_flat = x_permuted.reshape(batch_size, -1)
+
+        # --- Sort Logic (Verifiable / Auto_Lirpa compatible) ---
+        
+        # Group into pairs. 
+        # Because we are Channel Last, the last dim is C.
+        # This reshaping groups (c0, c1), (c2, c3), etc.
+        reshaped_x = x_flat.reshape(batch_size, -1, 2)
+        
+        x1s = reshaped_x[..., 0]
+        x2s = reshaped_x[..., 1]
+        
+        # Calculate diff and apply ReLU to determine min/max without conditional branching
+        # min(a,b) = x2 - ReLU(x2 - x1)
+        # max(a,b) = x1 + ReLU(x2 - x1)
+        diff = x2s - x1s
+        relu_diff = self.relu(diff)
+        
+        y1 = x2s - relu_diff # The smaller value
+        y2 = x1s + relu_diff # The larger value
+        
+        sorted_pairs = torch.stack((y1, y2), dim=2)
+        sorted_flat = sorted_pairs.reshape(batch_size, -1)
+        
+        # --- End Logic ---
+
+        # 3. Restore Shape
+        
+        # First reshape back to the permuted shape (N, ..., C)
+        output_permuted = sorted_flat.reshape(permuted_shape)
+        
+        # Finally, permute back to Channel First (N, C, ...)
+        # We need to calculate the inverse permutation indices
+        inv_dims = list(range(x.dim()))
+        # Move the last dim (which is now channels) back to self.axis
+        last_dim = inv_dims.pop(-1)
+        inv_dims.insert(self.axis, last_dim)
+        
+        output = output_permuted.permute(inv_dims)
+        
+        return output
     
     
 class GroupSort2Optimized(nn.Module):
@@ -502,6 +581,46 @@ def CNNA_CIFAR10_1_LIP_GNP():
     )
     return model
 
+def CNNA_CIFAR10_1_LIP_GNP_torchlip():
+    """
+    Model: CNN-A_1_LIP_GNP (CIFAR-10)
+    Structure: Conv(3, 16, 4, 2, 1) -> ReLU -> Conv(16, 32, 4, 2, 1) -> ReLU -> Linear(2048, 100) -> ReLU -> Linear(100, 10)
+    """
+    model = torchlip.Sequential(
+        AdaptiveOrthoConv2d(in_channels=3, out_channels=16, kernel_size=4, stride=2, padding=1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
+        torchlip.GroupSort2(),
+        # nn.ReLU(),
+        AdaptiveOrthoConv2d(in_channels=16, out_channels=32, kernel_size=4, stride=2, padding=1, padding_mode='zeros',ortho_params=DEFAULT_ORTHO_PARAMS),
+        torchlip.GroupSort2(),
+        # nn.ReLU(),
+        nn.Flatten(),
+        torchlip.SpectralLinear(32 * 8 * 8, 100), # 2048 input features
+        torchlip.GroupSort2(),
+        # nn.ReLU(),
+        torchlip.SpectralLinear(100, 10)
+    )
+    return model
+
+def CNNA_CIFAR10_1_LIP_GNP_circular():
+    """
+    Model: CNN-A_1_LIP_GNP (CIFAR-10)
+    Structure: Conv(3, 16, 4, 2, 1) -> ReLU -> Conv(16, 32, 4, 2, 1) -> ReLU -> Linear(2048, 100) -> ReLU -> Linear(100, 10)
+    """
+    model = torchlip.Sequential(
+        AdaptiveOrthoConv2d(in_channels=3, out_channels=16, kernel_size=4, stride=2, padding=1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        # nn.ReLU(),
+        AdaptiveOrthoConv2d(in_channels=16, out_channels=32, kernel_size=4, stride=2, padding=1,ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        # nn.ReLU(),
+        nn.Flatten(),
+        torchlip.SpectralLinear(32 * 8 * 8, 100), # 2048 input features
+        GroupSort_General(),
+        # nn.ReLU(),
+        torchlip.SpectralLinear(100, 10)
+    )
+    return model
+
 def CNNB_CIFAR10_1_LIP_GNP():
     """
     Model: CNN-B_1_LIP_GNP (CIFAR-10)
@@ -620,30 +739,30 @@ def VGG13_1_LIP_GNP_CIFAR10():
     """
     model = torchlip.Sequential(
         # Block 1: 3x32x32 -> 64x32x32
-        AdaptiveOrthoConv2d(3, 64, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(3, 64, 3, 1, 1, padding_mode='zeros',ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
-        AdaptiveOrthoConv2d(64, 64, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(64, 64, 3, 1, 1, padding_mode='zeros',ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
         # Downsample: 64x32x32 -> 64x16x16
-        AdaptiveOrthoConv2d(64, 64, 3, 2, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(64, 64, 3, 2, 1, padding_mode='zeros',ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
 
         # Block 2: 64x16x16 -> 128x16x16
-        AdaptiveOrthoConv2d(64, 128, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(64, 128, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
-        AdaptiveOrthoConv2d(128, 128, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(128, 128, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
         # Downsample: 128x16x16 -> 128x8x8
-        AdaptiveOrthoConv2d(128, 128, 3, 2, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(128, 128, 3, 2, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
 
         # Block 3: 128x8x8 -> 256x8x8
-        AdaptiveOrthoConv2d(128, 256, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(128, 256, 3, 1, 1,padding_mode='zeros',  ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
-        AdaptiveOrthoConv2d(256, 256, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(256, 256, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
         # Downsample: 256x8x8 -> 256x4x4
-        AdaptiveOrthoConv2d(256, 256, 3, 2, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(256, 256, 3, 2, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
 
         # Classifier
@@ -667,32 +786,32 @@ def VGG16_1_LIP_GNP_CIFAR10():
     """
     model = torchlip.Sequential(
         # Block 1: 3x32x32 -> 64x32x32
-        AdaptiveOrthoConv2d(3, 64, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(3, 64, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
-        AdaptiveOrthoConv2d(64, 64, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(64, 64, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
         # Downsample: 64x32x32 -> 64x16x16
-        AdaptiveOrthoConv2d(64, 64, 3, 2, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(64, 64, 3, 2, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
 
         # Block 2: 64x16x16 -> 128x16x16
-        AdaptiveOrthoConv2d(64, 128, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(64, 128, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
-        AdaptiveOrthoConv2d(128, 128, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(128, 128, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
         # Downsample: 128x16x16 -> 128x8x8
-        AdaptiveOrthoConv2d(128, 128, 3, 2, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(128, 128, 3, 2, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
 
         # Block 3: 128x8x8 -> 256x8x8
-        AdaptiveOrthoConv2d(128, 256, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(128, 256, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
-        AdaptiveOrthoConv2d(256, 256, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(256, 256, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
-        AdaptiveOrthoConv2d(256, 256, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(256, 256, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
         # Downsample: 256x8x8 -> 256x4x4
-        AdaptiveOrthoConv2d(256, 256, 3, 2, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(256, 256, 3, 2, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
 
         # Classifier
@@ -716,47 +835,47 @@ def VGG19_1_LIP_GNP_CIFAR10():
     """
     model = torchlip.Sequential(
         # Block 1: 3x32x32 -> 64x32x32
-        AdaptiveOrthoConv2d(3, 64, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(3, 64, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
-        AdaptiveOrthoConv2d(64, 64, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(64, 64, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
         # Downsample: 64x32x32 -> 64x16x16
-        AdaptiveOrthoConv2d(64, 64, 3, 2, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(64, 64, 3, 2, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
 
         # Block 2: 64x16x16 -> 128x16x16
-        AdaptiveOrthoConv2d(64, 128, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(64, 128, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
-        AdaptiveOrthoConv2d(128, 128, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(128, 128, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
         # Downsample: 128x16x16 -> 128x8x8
-        AdaptiveOrthoConv2d(128, 128, 3, 2, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(128, 128, 3, 2, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
 
         # Block 3: 128x8x8 -> 256x8x8
-        AdaptiveOrthoConv2d(128, 256, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(128, 256, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
-        AdaptiveOrthoConv2d(256, 256, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(256, 256, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
-        AdaptiveOrthoConv2d(256, 256, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(256, 256, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
-        AdaptiveOrthoConv2d(256, 256, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(256, 256, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
         # Downsample: 256x8x8 -> 256x4x4
-        AdaptiveOrthoConv2d(256, 256, 3, 2, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(256, 256, 3, 2, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
 
         # Block 4: 256x4x4 -> 512x4x4
-        AdaptiveOrthoConv2d(256, 512, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(256, 512, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
-        AdaptiveOrthoConv2d(512, 512, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(512, 512, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
-        AdaptiveOrthoConv2d(512, 512, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(512, 512, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
-        AdaptiveOrthoConv2d(512, 512, 3, 1, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(512, 512, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
         # Downsample: 512x4x4 -> 512x2x2
-        AdaptiveOrthoConv2d(512, 512, 3, 2, 1, ortho_params=DEFAULT_ORTHO_PARAMS),
+        AdaptiveOrthoConv2d(512, 512, 3, 2, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
 
         # Classifier

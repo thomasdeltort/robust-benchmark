@@ -25,6 +25,76 @@ from torchvision.transforms import v2
 from torchvision import datasets
 from torch.utils.data import DataLoader
 
+import boto3
+import os
+from botocore.exceptions import NoCredentialsError, ClientError
+
+def download_s3_folder(bucket_name, s3_folder, local_dir):
+    """
+    Downloads an S3 folder to a local directory.
+    """
+    s3 = boto3.client('s3')
+
+    # Ensure the local directory exists
+    if not os.path.exists(local_dir):
+        os.makedirs(local_dir)
+
+    # Handle pagination in case there are many models
+    paginator = s3.get_paginator('list_objects_v2')
+    pages = paginator.paginate(Bucket=bucket_name, Prefix=s3_folder)
+
+    print(f"--- Starting sync from s3://{bucket_name}/{s3_folder} to {local_dir} ---")
+
+    download_count = 0
+
+    try:
+        for page in pages:
+            # Check if the folder is empty
+            if 'Contents' not in page:
+                continue
+
+            for obj in page['Contents']:
+                s3_key = obj['Key']
+                
+                # Skip directory markers (keys ending in /)
+                if s3_key.endswith('/'):
+                    continue
+
+                # Remove the 'lip_models/' prefix to map correctly to './models/'
+                # e.g., 'lip_models/model.pth' becomes 'model.pth'
+                relative_path = os.path.relpath(s3_key, s3_folder)
+                local_file_path = os.path.join(local_dir, relative_path)
+
+                # Create local subdirectories if they exist in S3 structure
+                local_file_dir = os.path.dirname(local_file_path)
+                if not os.path.exists(local_file_dir):
+                    os.makedirs(local_file_dir)
+
+                # Download
+                print(f"Downloading: {s3_key} -> {local_file_path}")
+                s3.download_file(bucket_name, s3_key, local_file_path)
+                download_count += 1
+
+        if download_count == 0:
+            print("No files found in the specified S3 folder.")
+        else:
+            print(f"\nSuccess! {download_count} files downloaded.")
+
+    except NoCredentialsError:
+        print("Error: AWS credentials not found. Please run 'aws configure'.")
+    except ClientError as e:
+        print(f"AWS Client Error: {e}")
+    except Exception as e:
+        print(f"Unexpected Error: {e}")
+
+if __name__ == "__main__":
+    # --- Configuration matches your training script ---
+    BUCKET_NAME = "tdrobustbucket"
+    S3_FOLDER = "lip_models" 
+    LOCAL_DIRECTORY = "./models" 
+
+    download_s3_folder(BUCKET_NAME, S3_FOLDER, LOCAL_DIRECTORY)
+
 def load_cifar10(batch_size, aug_level='medium'):
     """
     Args:
