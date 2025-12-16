@@ -40,6 +40,200 @@ import numpy as np
 #         y_min = b - relu_diff
 #         sorted_pairs = torch.stack((y_min, y_max), dim=split_dim)
 #         return sorted_pairs.reshape(x.shape)
+
+# class GroupSort_General(nn.Module):
+
+#     """
+
+#     A universal, auto_lirpa-compatible PyTorch module that sorts pairs of features.
+
+
+
+#     This module can handle inputs of any shape (e.g., 2D, 4D). It works by
+
+#     temporarily flattening the feature dimensions, applying the sort logic in a
+
+#     verifier-friendly way (with ReLU on a 2D tensor), and then reshaping the
+
+#     output back to the original input shape.
+
+
+
+#     The total number of features (product of dimensions after the batch dim) must be even.
+
+#     """
+
+#     def __init__(self):
+
+#         super(GroupSort_General, self).__init__()
+
+#         self.relu = nn.ReLU()
+
+
+
+#     def forward(self, x: torch.Tensor) -> torch.Tensor:
+
+#         original_shape = x.shape
+
+#         batch_size = original_shape[0]
+
+       
+
+#         num_features = np.prod(original_shape[1:])
+
+       
+
+#         if num_features % 2 != 0:
+
+#             raise ValueError(
+
+#                 f"The total number of features must be even, but got {num_features} "
+
+#                 f"for shape {original_shape}."
+
+#             )
+
+
+
+#         # Utiliser .reshape() pour gérer les tenseurs non-contigus
+
+#         x_flat = x.reshape(batch_size, -1)
+
+
+
+#         # --- Logique de tri ---
+
+       
+
+#         # .reshape() est aussi plus sûr ici, par précaution
+
+#         reshaped_x = x_flat.reshape(batch_size, -1, 2)
+
+       
+
+#         x1s = reshaped_x[..., 0]
+
+#         x2s = reshaped_x[..., 1]
+
+       
+
+#         diff = x2s - x1s
+
+#         relu_diff = self.relu(diff)
+
+       
+
+#         y1 = x2s - relu_diff
+
+#         y2 = x1s + relu_diff
+
+       
+
+#         sorted_pairs = torch.stack((y1, y2), dim=2)
+
+       
+
+#         # .reshape() est aussi plus sûr ici
+
+#         sorted_flat = sorted_pairs.reshape(batch_size, -1)
+
+
+
+#         # --- Fin de la logique ---
+
+
+
+#         # Restaurer la forme originale en utilisant .reshape()
+
+#         output = sorted_flat.reshape(original_shape)
+
+       
+
+#         return output
+    
+
+# class GroupSort_General(nn.Module):
+#     """
+#     Applies GroupSort specifically on the channel dimension.
+    
+#     It permutes the input from (N, C, ...) to (N, ..., C), applies the 
+#     sort logic so that pairs (c_2k, c_2k+1) are sorted, and then restores
+#     the original layout.
+#     """
+#     def __init__(self, axis=1):
+#         super(GroupSort_General, self).__init__()
+#         self.axis = axis
+#         self.relu = nn.ReLU()
+
+#     def forward(self, x: torch.Tensor) -> torch.Tensor:
+#         # 1. Permute to Channel Last
+#         # We assume the channel is at self.axis (usually 1).
+#         # We move that axis to the very end (-1).
+#         dims = list(range(x.dim()))
+#         # Remove the channel axis from its current spot and append to end
+#         channel_dim = dims.pop(self.axis) 
+#         dims.append(channel_dim)
+        
+#         # permute returns a view, but we usually need contiguous memory for reshaping
+#         x_permuted = x.permute(dims).contiguous()
+        
+#         # Capture the shape after permutation: (N, D1, D2, ..., C)
+#         permuted_shape = x_permuted.shape
+#         batch_size = permuted_shape[0]
+#         num_channels = permuted_shape[-1]
+        
+#         if num_channels % 2 != 0:
+#              raise ValueError(
+#                 f"The number of channels must be even, but got {num_channels} "
+#                 f"for input shape {x.shape}."
+#             )
+
+#         # 2. Flatten for the sorting logic
+#         # We flatten everything except batch. Since Channel is now last,
+#         # adjacent elements in this flattened view correspond to adjacent channels.
+#         x_flat = x_permuted.reshape(batch_size, -1)
+
+#         # --- Sort Logic (Verifiable / Auto_Lirpa compatible) ---
+        
+#         # Group into pairs. 
+#         # Because we are Channel Last, the last dim is C.
+#         # This reshaping groups (c0, c1), (c2, c3), etc.
+#         reshaped_x = x_flat.reshape(batch_size, -1, 2)
+        
+#         x1s = reshaped_x[..., 0]
+#         x2s = reshaped_x[..., 1]
+        
+#         # Calculate diff and apply ReLU to determine min/max without conditional branching
+#         # min(a,b) = x2 - ReLU(x2 - x1)
+#         # max(a,b) = x1 + ReLU(x2 - x1)
+#         diff = x2s - x1s
+#         relu_diff = self.relu(diff)
+        
+#         y1 = x2s - relu_diff # The smaller value
+#         y2 = x1s + relu_diff # The larger value
+        
+#         sorted_pairs = torch.stack((y1, y2), dim=2)
+#         sorted_flat = sorted_pairs.reshape(batch_size, -1)
+        
+#         # --- End Logic ---
+
+#         # 3. Restore Shape
+        
+#         # First reshape back to the permuted shape (N, ..., C)
+#         output_permuted = sorted_flat.reshape(permuted_shape)
+        
+#         # Finally, permute back to Channel First (N, C, ...)
+#         # We need to calculate the inverse permutation indices
+#         inv_dims = list(range(x.dim()))
+#         # Move the last dim (which is now channels) back to self.axis
+#         last_dim = inv_dims.pop(-1)
+#         inv_dims.insert(self.axis, last_dim)
+        
+#         output = output_permuted.permute(inv_dims)
+        
+#         return output
+    
+    
 class GroupSort_General(nn.Module):
     """
     Applies GroupSort specifically on the channel dimension.
@@ -94,10 +288,10 @@ class GroupSort_General(nn.Module):
         # Calculate diff and apply ReLU to determine min/max without conditional branching
         # min(a,b) = x2 - ReLU(x2 - x1)
         # max(a,b) = x1 + ReLU(x2 - x1)
-        diff = x2s - x1s
+        diff = x2s + (-1*x1s)
         relu_diff = self.relu(diff)
         
-        y1 = x2s - relu_diff # The smaller value
+        y1 = x2s + (-1*relu_diff) # The smaller value
         y2 = x1s + relu_diff # The larger value
         
         sorted_pairs = torch.stack((y1, y2), dim=2)

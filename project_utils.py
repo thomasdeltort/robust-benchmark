@@ -790,7 +790,7 @@ def build_C(label, classes):
     
     return C
 
-def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indices, batch_size=8, norm=2, return_robust_points=False, x_U=None, x_L=None):
+def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indices, batch_size=4, norm=2, return_robust_points=False, x_U=None, x_L=None):
     """
     Computes Certified Robust Accuracy (CRA) using Alpha-Crown in batches to manage memory,
     and measures the mean verification time per image.

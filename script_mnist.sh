@@ -38,12 +38,12 @@ MODEL_DIR="./models"
 
 # L_inf: 0.01 to 0.40 with step 0.002
 # Example: 0.010, 0.012, 0.014 ... 0.400 (~196 values)
-EPSILONS_LINF=($(seq -f "%.3f" 0.01 0.002 0.40))
-
+EPSILONS_LINF=($(seq -f "%.3f" 0.005  0.002 0.40))
+# 0.005
 # L_2: 0.05 to 2.00 with step 0.01
 # Example: 0.05, 0.06, 0.07 ... 2.00 (~196 values)
-EPSILONS_L2=($(seq -f "%.2f" 0.05 0.01 2.00))
-
+EPSILONS_L2=($(seq -f "%.2f" 0.005  0.01 2.00))
+# 0.005
 # 3. Experiment Loop
 # ------------------------------------------------------------------------------
 
@@ -79,7 +79,7 @@ for model_file in "${MODELS[@]}"; do
             --model_path "${MODEL_DIR}/${model_file}" \
             --norm "inf" \
             --epsilon "$eps" \
-            --output_csv "./results/${model_name_clean}_linf_${eps}.csv" > /dev/null 2>&1
+            --output_csv "./results/${model_name_clean}_linf_.csv" > /dev/null 2>&1
             
         if [ $? -ne 0 ]; then
             echo "    [ERROR] Experiment failed for $model_name_clean (Linf, eps=$eps)"
@@ -96,7 +96,7 @@ for model_file in "${MODELS[@]}"; do
             --dataset mnist \
             --model_path "${MODEL_DIR}/${model_file}" \
             --epsilon "$eps" \
-            --save_dir "./results/${model_name_clean}_l2_${eps}.csv" > /dev/null 2>&1
+            --output_csv "./results/${model_name_clean}_l2_.csv" > /dev/null 2>&1
 
         if [ $? -ne 0 ]; then
             echo "    [ERROR] Experiment failed for $model_name_clean (L2, eps=$eps)"

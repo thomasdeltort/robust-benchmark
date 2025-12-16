@@ -141,8 +141,6 @@ def main():
     print(f"Using device: {device}")
     # Load the benchmark dataset and the pre-trained model
     images, targets, epsilon_rescaled, classes = load_dataset_benchmark(args)
-    # images = images[:2]
-    # targets = targets[:2]
     model = load_model(args, model_zoo, device)
     model.eval() # Set the model to evaluation mode
     # --- 3. Calculate Clean Accuracy (Baseline) ---
