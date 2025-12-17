@@ -115,8 +115,8 @@ def main():
                         help='Dataset to use for evaluation (cifar10 or mnist).')
     parser.add_argument('--epsilon', type=float, required=True,
                         help='Adversarial perturbation radius (L-infinity norm).')
-    parser.add_argument('--batch_size', type=int, default=256,
-                        help='Input batch size for evaluation. Default: 256.')
+    parser.add_argument('--batch_size', type=int, default=8,
+                        help='Input batch size for evaluation. Default: 8.')
     parser.add_argument('--output_csv', type=str, 
                         help='Path to save the output CSV file. Results are appended.')
     parser.add_argument('--output_pkl', type=str,
@@ -184,32 +184,30 @@ def main():
     aa_era, time_aa = compute_autoattack_era_and_time(images, targets, model, args.epsilon, clean_indices, norm = norm, dataset_name=args.dataset)
     print(f"  - Empirical Robustness (AutoAttack): {aa_era:.2f}% | Time: {time_aa:.4f}s")
     # aa_era, time_aa = 0,0
-
+    
+    # print("shapes : ", x_L.shape, x_U.shape)
     if "mnist" in args.dataset.lower():
-        # MNIST: Raw range is usually [0, 1] with no mean/std normalization applied
-        # We create tensors of shape (1, 1, 1, 1) for broadcasting
-        x_L = torch.tensor(0.0, device=device).view(1, 1, 1, 1)
-        x_U = torch.tensor(1.0, device=device).view(1, 1, 1, 1)
-
-        x_L = torch.tensor(0.0, device=device).expand(1, 1, 28, 28)
-        x_U = torch.tensor(1.0, device=device).expand(1, 1, 28, 28)
+        # MNIST: Raw range is usually [0, 1]
+        # We define bounds (1, 1, 28, 28) and force contiguous memory
+        x_L = torch.zeros((1, 1, 28, 28), device=device)
+        x_U = torch.ones((1, 1, 28, 28), device=device)
 
     elif "cifar" in args.dataset.lower():
         # CIFAR: Range [0, 1] transformed by (image - mean) / std
-        # We define Mean/Std and reshape to (1, 3, 1, 1) for broadcasting
+        # We define Mean/Std with shape (1, 3, 1, 1) for broadcasting
         MEANS = torch.tensor([0.4914, 0.4822, 0.4465], device=device).view(1, 3, 1, 1)
         STD = torch.tensor([0.225, 0.225, 0.225], device=device).view(1, 3, 1, 1)
-       
-        # Calculate normalized bounds
-        # x_L = ((0 - MEANS) / STD)
-        # x_U = ((1 - MEANS) / STD)
-        x_L = ((0 - MEANS) / STD).expand(1, 3, 32, 32)
-        x_U = ((1 - MEANS) / STD).expand(1, 3, 32, 32)
+        
+        # Calculate normalized bounds (0 and 1 transformed)
+        # We expand to (1, 3, 32, 32) and force contiguous memory
+        x_L = ((0.0 - MEANS) / STD).expand(1, 3, 32, 32).contiguous()
+        x_U = ((1.0 - MEANS) / STD).expand(1, 3, 32, 32).contiguous()
 
     else:
         raise ValueError(f"Bounds not defined for dataset: {args.dataset}")
-    
-    lirpa_alpha_vra, time_lirpa_alpha = compute_alphacrown_vra_and_time(images, targets, model, epsilon_rescaled, clean_indices, norm = args.norm, x_U=x_U, x_L=x_L)
+
+    print("Bounds shapes:", x_L.shape, x_U.shape)
+    lirpa_alpha_vra, time_lirpa_alpha = compute_alphacrown_vra_and_time(images, targets, model, epsilon_rescaled, clean_indices, batch_size=args.batch_size, norm = args.norm, x_U=x_U, x_L=x_L)
     # lirpa_alpha_vra, time_lirpa_alpha = compute_alphacrown_vra_and_time(images, targets, model, epsilon_rescaled, clean_indices, norm = args.norm)
     print(f"  - Certified Robustness (LIRPA α-CROWN): {lirpa_alpha_vra:.2f}% | Time: {time_lirpa_alpha:.4f}s")
     # lirpa_alpha_vra, time_lirpa_alpha = 0, 0
@@ -223,8 +221,9 @@ def main():
         # lirpa_beta_vra, time_lirpa_beta = 0, 0
         sdp_crown_vra, time_sdp = 0, 0
     elif norm == '2':
-        sdp_crown_vra, time_sdp = compute_sdp_crown_vra(images, targets, model, epsilon_rescaled, clean_indices, device, classes, args, x_U=x_U, x_L=x_L)
+        sdp_crown_vra, time_sdp, rob_idx = compute_sdp_crown_vra(images, targets, model, epsilon_rescaled, clean_indices, device, classes, args, batch_size = 2,return_robust_points=True, x_U=x_U, x_L=x_L)
         print(f"  - Certified Robustness (SDP-CROWN): {sdp_crown_vra:.2f}% | Time: {time_sdp:.4f}s")
+        print(rob_idx)
         # sdp_crown_vra, time_sdp = 0, 0
         lirpa_beta_vra, time_lirpa_beta = 0, 0
     # --- 5. Store and Save Results ---

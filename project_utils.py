@@ -505,13 +505,12 @@ def create_robustness_plot_v3(filepath, output_filename):
 # Example Usage:
 # create_robustness_plot_v3(filepath='results/results_Linf.csv', model_name="ResNet-18 (CIFAR-10)")
 
-
 def compute_certificates_CRA(images, model, epsilon, correct_indices, norm='2', L=1, return_robust_points=False):
     """
-    Computes certificates, CRA, and the time taken for the core computation. Adapting to the norm.
+    Computes certificates and True CRA (Certified Robust Accuracy) relative to the ENTIRE dataset.
 
     Args:
-        images (torch.Tensor): The dataset images.
+        images (torch.Tensor): The FULL dataset images (used to determine total count).
         model (torch.nn.Module): The neural network model.
         epsilon (float): The radius for robustness certification.
         correct_indices (torch.Tensor or list): Indices of correctly classified images in the original set.
@@ -527,14 +526,17 @@ def compute_certificates_CRA(images, model, epsilon, correct_indices, norm='2', 
     """
     print(f"Norm: {norm}")
     
-    # Ensure correct_indices is a tensor for boolean masking later
+    # Ensure correct_indices is a tensor
     if not isinstance(correct_indices, torch.Tensor):
         correct_indices = torch.tensor(correct_indices)
-        
-    correct_images = images[correct_indices]
-    total_num_images = correct_images.shape[0]
 
-    # Handle empty case
+    # 1. Total Dataset Size (The denominator for True CRA)
+    total_dataset_size = images.shape[0] 
+        
+    # 2. Subset to Compute On (We only verify the Cleanly Classified points)
+    correct_images = images[correct_indices]
+    
+    # Handle empty case (if model got 0% accuracy)
     if len(correct_images) == 0:
         empty_certs = torch.tensor([])
         if return_robust_points:
@@ -568,27 +570,113 @@ def compute_certificates_CRA(images, model, epsilon, correct_indices, norm='2', 
     else:
         raise ValueError(f"Unsupported norm: '{norm}'. Please use '2' or 'inf'.")
 
-    # --- Step 2: Calculate certificates and CRA ---
+    # --- Step 2: Calculate certificates ---
     # Calculate the margin divided by the Lipschitz constant and scale
     certificates = (values[:, 0] - values[:, 1]) / (scale_certificate * L)
     
-    # Create a boolean mask on CPU (to match correct_indices device usually)
     # Check which certificates exceed the epsilon threshold
     is_robust_mask = (certificates >= epsilon).cpu()
     
     num_robust_points = torch.sum(is_robust_mask).item()
-    cra = (num_robust_points / total_num_images) * 100.0
+    
+    # --- Step 3: Compute True CRA ---
+    # True CRA = (Robust Count / TOTAL Dataset Size) * 100
+    cra = (num_robust_points / total_dataset_size) * 100.0
 
-    # Calculate average time per image
+    # Calculate average time per image (only counting the ones we actually processed)
     time_per_img = elapsed_time / len(correct_indices)
 
-    # --- Step 3: Return results ---
+    # --- Step 4: Return results ---
     if return_robust_points:
         # Apply the mask to the original indices to get the ID of robust images
         robust_indices = correct_indices[is_robust_mask]
         return certificates.cpu(), cra, time_per_img, robust_indices
     
     return certificates.cpu(), cra, time_per_img
+
+# def compute_certificates_CRA(images, model, epsilon, correct_indices, norm='2', L=1, return_robust_points=False):
+#     """
+#     Computes certificates, CRA, and the time taken for the core computation. Adapting to the norm.
+
+#     Args:
+#         images (torch.Tensor): The dataset images.
+#         model (torch.nn.Module): The neural network model.
+#         epsilon (float): The radius for robustness certification.
+#         correct_indices (torch.Tensor or list): Indices of correctly classified images in the original set.
+#         norm (str): The norm to use ('2' or 'inf').
+#         L (float): Lipschitz constant.
+#         return_robust_points (bool): If True, returns the indices of robust images.
+
+#     Returns:
+#         If return_robust_points is False:
+#             (certificates, cra, time_per_image)
+#         If return_robust_points is True:
+#             (certificates, cra, time_per_image, robust_indices)
+#     """
+#     print(f"Norm: {norm}")
+    
+#     # Ensure correct_indices is a tensor for boolean masking later
+#     if not isinstance(correct_indices, torch.Tensor):
+#         correct_indices = torch.tensor(correct_indices)
+        
+#     correct_images = images[correct_indices]
+#     total_num_images = correct_images.shape[0]
+
+#     # Handle empty case
+#     if len(correct_images) == 0:
+#         empty_certs = torch.tensor([])
+#         if return_robust_points:
+#             return empty_certs, 0.0, 0.0, torch.tensor([])
+#         return empty_certs, 0.0, 0.0
+
+#     # --- Step 1: Time the core computation ---
+#     device = next(model.parameters()).device 
+    
+#     if device.type == 'cuda':
+#         torch.cuda.synchronize()
+    
+#     start_time = time.time()
+
+#     with torch.no_grad():
+#         # We need the top 2 logits to calculate the margin
+#         values, _ = torch.topk(model(correct_images.to(device)), k=2)
+
+#     if device.type == 'cuda':
+#         torch.cuda.synchronize()
+
+#     end_time = time.time()
+#     elapsed_time = end_time - start_time
+#     # --- End of Timing ---
+
+#     # Adapt certificate computation to the norm
+#     if norm == '2':
+#         scale_certificate = np.sqrt(2)
+#     elif norm == 'inf':
+#         scale_certificate = 2.0
+#     else:
+#         raise ValueError(f"Unsupported norm: '{norm}'. Please use '2' or 'inf'.")
+
+#     # --- Step 2: Calculate certificates and CRA ---
+#     # Calculate the margin divided by the Lipschitz constant and scale
+#     certificates = (values[:, 0] - values[:, 1]) / (scale_certificate * L)
+    
+#     # Create a boolean mask on CPU (to match correct_indices device usually)
+#     # Check which certificates exceed the epsilon threshold
+#     is_robust_mask = (certificates >= epsilon).cpu()
+    
+#     num_robust_points = torch.sum(is_robust_mask).item()
+#     cra = (num_robust_points / total_num_images) * 100.0
+
+#     # Calculate average time per image
+#     time_per_img = elapsed_time / len(correct_indices)
+
+#     # --- Step 3: Return results ---
+#     if return_robust_points:
+#         # Apply the mask to the original indices to get the ID of robust images
+#         robust_indices = correct_indices[is_robust_mask]
+#         return certificates.cpu(), cra, time_per_img, robust_indices
+    
+#     return certificates.cpu(), cra, time_per_img
 
 def compute_pgd_era_and_time(images, targets, model, epsilon, clean_indices, norm='2', dataset_name='cifar10'):
     """
@@ -609,7 +697,7 @@ def compute_pgd_era_and_time(images, targets, model, epsilon, clean_indices, nor
         - mean_time_per_image (float): The average attack time per image in seconds.
     """
     device = next(model.parameters()).device
-    total_num_images = len(clean_indices) 
+    total_num_images = images.shape[0] 
 
     # --- Step 1: Filter the dataset to only attack clean images ---
     # We only care about robustness for images the model gets right to begin with.
@@ -667,36 +755,111 @@ def compute_pgd_era_and_time(images, targets, model, epsilon, clean_indices, nor
 
     return cra, mean_time_per_image
 
-def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indices, norm='2', dataset_name='cifar10'):
+# def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indices, norm='2', dataset_name='cifar10'):
+#     """
+#     Computes Empirical Robust Accuracy (CRA) against AutoAttack (L2) and
+#     measures the mean computation time per image.
+
+#     Args:
+#         images (torch.Tensor): The entire batch of input images.
+#         targets (torch.Tensor): The corresponding labels for all images.
+#         model (torch.nn.Module): The model to be attacked.
+#         epsilon (float): The AutoAttack radius.
+#         clean_indices (torch.Tensor): A tensor of indices for images that were
+#                                      initially classified correctly.
+
+#     Returns:
+#         A tuple containing:
+#         - cra (float): The Empirical Robust Accuracy percentage.
+#         - mean_time_per_image (float): The average attack time per image in seconds.
+#     """
+#     device = next(model.parameters()).device
+#     total_num_images = images.shape[0] 
+
+#     # --- Step 1: Filter the dataset ---
+#     correct_images = images[clean_indices].contiguous().to(device)
+#     correct_targets = targets[clean_indices].to(device)
+
+#     if len(correct_images) == 0:
+#         return 0.0, 0.0
+    
+#     # --- Step 2: Set up and time the BATCH attack ---
+#     # We adapt the computation of the certificate to the given norm
+#     if norm == '2':
+#         atk = torchattacks.AutoAttack(model, norm='L2', eps=epsilon)
+#     elif norm == 'inf':
+#         atk = torchattacks.AutoAttack(model, norm='Linf', eps=epsilon)
+#     else:
+#         raise ValueError(f"Unsupported norm: '{norm}'. Please use '2' or 'inf'.")
+    
+#     if dataset_name=="cifar10":
+#         atk.set_normalization_used(mean = torch.tensor([0.4914, 0.4822, 0.4465]).view(3, 1, 1).cuda(), std = torch.tensor([0.225, 0.225, 0.225]).view(3, 1, 1).cuda())
+
+#     # Synchronize GPU before starting the timer
+#     if device.type == 'cuda':
+#         torch.cuda.synchronize()
+#     start_time = time.time()
+
+#     # Generate adversarial examples for the ENTIRE BATCH
+#     adv_images = atk(correct_images, correct_targets)
+#     # Synchronize GPU again before stopping the timer
+#     if device.type == 'cuda':
+#         torch.cuda.synchronize()
+#     end_time = time.time()
+
+#     total_time = end_time - start_time
+#     mean_time_per_image = total_time / len(correct_images)
+
+#     # --- Step 3: Calculate the Empirical Robust Accuracy (CRA) ---
+#     with torch.no_grad():
+#         adv_outputs = model(adv_images)
+#         adv_predictions = adv_outputs.argmax(dim=1)
+#         robust_mask = (adv_predictions == correct_targets)
+#         num_robust_points = torch.sum(robust_mask).item()
+#         non_robust_mask = ~robust_mask  # or (adv_predictions != correct_targets)
+        
+#         # Get the indices of the non-robust points within the current batch
+#         non_robust_indices = torch.nonzero(non_robust_mask, as_tuple=True)[0]
+        
+#         # Print the list of indices
+#         if non_robust_indices.numel() > 0:
+#             print(f"Indices of non-robust images in this batch: {non_robust_indices.tolist()}")
+#         # CRA is relative to the TOTAL dataset size
+#         cra = (num_robust_points / total_num_images) * 100.0
+# #[7, 34, 39, 40, 47, 66, 67, 77, 80, 95, 114, 126]
+#     return cra, mean_time_per_image
+
+def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indices, norm='2', dataset_name='cifar10', return_robust_points=False):
     """
-    Computes Empirical Robust Accuracy (CRA) against AutoAttack (L2) and
-    measures the mean computation time per image.
+    Computes Empirical Robust Accuracy (CRA) against AutoAttack (L2/Linf).
 
     Args:
         images (torch.Tensor): The entire batch of input images.
         targets (torch.Tensor): The corresponding labels for all images.
         model (torch.nn.Module): The model to be attacked.
         epsilon (float): The AutoAttack radius.
-        clean_indices (torch.Tensor): A tensor of indices for images that were
-                                     initially classified correctly.
+        clean_indices (torch.Tensor): Indices of images that were initially classified correctly.
+        norm (str): '2' or 'inf'.
+        return_robust_points (bool): If True, returns the global indices of robust points.
 
     Returns:
-        A tuple containing:
-        - cra (float): The Empirical Robust Accuracy percentage.
-        - mean_time_per_image (float): The average attack time per image in seconds.
+        (cra, mean_time_per_image) OR (cra, mean_time_per_image, robust_indices)
     """
     device = next(model.parameters()).device
-    total_num_images = len(clean_indices) 
+    total_num_images = images.shape[0] 
 
     # --- Step 1: Filter the dataset ---
+    # We only attack images that were originally correct
     correct_images = images[clean_indices].contiguous().to(device)
     correct_targets = targets[clean_indices].to(device)
 
+    # Handle edge case: No correct images to begin with
     if len(correct_images) == 0:
+        if return_robust_points:
+            return 0.0, 0.0, torch.tensor([], dtype=torch.long, device=device)
         return 0.0, 0.0
     
-    # --- Step 2: Set up and time the BATCH attack ---
-    # We adapt the computation of the certificate to the given norm
+    # --- Step 2: Set up Attack ---
     if norm == '2':
         atk = torchattacks.AutoAttack(model, norm='L2', eps=epsilon)
     elif norm == 'inf':
@@ -704,17 +867,21 @@ def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indic
     else:
         raise ValueError(f"Unsupported norm: '{norm}'. Please use '2' or 'inf'.")
     
-    if dataset_name=="cifar10":
-        atk.set_normalization_used(mean = torch.tensor([0.4914, 0.4822, 0.4465]).view(3, 1, 1).cuda(), std = torch.tensor([0.225, 0.225, 0.225]).view(3, 1, 1).cuda())
+    # FIX: Correct Normalization for CIFAR-10 (Standard Deviations were incorrect)
+    if dataset_name == "cifar10":
+        atk.set_normalization_used(
+            mean=torch.tensor([0.4914, 0.4822, 0.4465]).view(3, 1, 1).to(device), 
+            std=torch.tensor([0.2023, 0.1994, 0.2010]).view(3, 1, 1).to(device)
+        )
 
-    # Synchronize GPU before starting the timer
+    # --- Step 3: Run and Time Attack ---
     if device.type == 'cuda':
         torch.cuda.synchronize()
     start_time = time.time()
 
-    # Generate adversarial examples for the ENTIRE BATCH
+    # Generate adversarial examples
     adv_images = atk(correct_images, correct_targets)
-    # Synchronize GPU again before stopping the timer
+    
     if device.type == 'cuda':
         torch.cuda.synchronize()
     end_time = time.time()
@@ -722,24 +889,31 @@ def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indic
     total_time = end_time - start_time
     mean_time_per_image = total_time / len(correct_images)
 
-    # --- Step 3: Calculate the Empirical Robust Accuracy (CRA) ---
+    # --- Step 4: Calculate ERA (True Robust Accuracy) ---
     with torch.no_grad():
         adv_outputs = model(adv_images)
         adv_predictions = adv_outputs.argmax(dim=1)
+        
+        # Boolean mask: True where the model resisted the attack
         robust_mask = (adv_predictions == correct_targets)
+        
         num_robust_points = torch.sum(robust_mask).item()
-        non_robust_mask = ~robust_mask  # or (adv_predictions != correct_targets)
         
-        # Get the indices of the non-robust points within the current batch
-        non_robust_indices = torch.nonzero(non_robust_mask, as_tuple=True)[0]
-        
-        # Print the list of indices
-        if non_robust_indices.numel() > 0:
-            print(f"Indices of non-robust images in this batch: {non_robust_indices.tolist()}")
-        # CRA is relative to the TOTAL dataset size
+        # Calculate ERA relative to the TOTAL original dataset
         cra = (num_robust_points / total_num_images) * 100.0
-#[7, 34, 39, 40, 47, 66, 67, 77, 80, 95, 114, 126]
+
+    # --- Step 5: Return Results ---
+    if return_robust_points:
+        # We need to map the boolean mask back to the original indices.
+        # clean_indices contains the original IDs of the images we attacked.
+        # robust_mask tells us which of those survived.
+        robust_indices = clean_indices[robust_mask.cpu()]
+        
+        return cra, mean_time_per_image, robust_indices
+
     return cra, mean_time_per_image
+
+
 # 7 34 39 40 66 80 95 114 126
 #safe-incomplete (total 118), index: [0, 1, 2, 7, 8, 13, 14, 17, 18, 20, 21, 22, 24, 27, 28, 30, 31, 32, 33, 34, 37, 38, 39, 40, 41, 42, 47, 48, 49, 51, 52, 54, 55, 59, 60, 62, 64, 66, 68, 69, 70, 71, 73, 74, 79, 80, 81, 82, 83, 84, 85, 86, 87, 89, 91, 93, 95, 98, 99, 101, 103, 104, 108, 109, 110, 111, 112, 114, 115, 116, 117, 118, 121, 122, 126, 131, 133, 135, 136, 137, 139, 140, 142, 144, 145, 146, 148, 153, 154, 157, 158, 159, 160, 161, 164, 166, 167, 168, 171, 172, 174, 175, 177, 179, 180, 181, 182, 183, 186, 187, 188, 189, 190, 192, 194, 195, 197, 199]
 # unsafe-pgd (total 81), index: [3, 4, 5, 6, 9, 10, 11, 12, 15, 16, 19, 23, 25, 26, 29, 35, 36, 43, 44, 45, 46, 50, 53, 56, 57, 61, 63, 65, 67, 72, 75, 76, 77, 78, 88, 90, 92, 94, 96, 97, 100, 102, 105, 106, 107, 113, 119, 120, 123, 124, 125, 127, 128, 129, 130, 132, 134, 138, 141, 143, 147, 149, 150, 151, 152, 155, 156, 162, 163, 165, 169, 170, 173, 176, 178, 184, 185, 191, 193, 196, 198]
@@ -790,175 +964,93 @@ def build_C(label, classes):
     
     return C
 
-def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indices, batch_size=4, norm=2, return_robust_points=False, x_U=None, x_L=None):
-    """
-    Computes Certified Robust Accuracy (CRA) using Alpha-Crown in batches to manage memory,
-    and measures the mean verification time per image.
-    
-    Args:
-        images (Tensor): The entire dataset's images.
-        targets (Tensor): The entire dataset's labels.
-        model (nn.Module): The model to verify.
-        epsilon (float): The perturbation radius.
-        clean_indices (Tensor): Indices of correctly classified images.
-        batch_size (int): The number of images to verify in each batch.
-        norm (int or float): The norm (e.g., 2 or np.inf).
-        return_robust_points (bool): If True, returns the list of global indices of robust images.
-
-    Returns:
-        If return_robust_points is False:
-            (cra, mean_time_per_image)
-        If return_robust_points is True:
-            (cra, mean_time_per_image, robust_indices)
-    """
-
-    device = next(model.parameters()).device
-    total_num_images = len(images)
-    model.eval()
-    
-    # Ensure clean_indices is a tensor for indexing
-    if not isinstance(clean_indices, torch.Tensor):
-        clean_indices = torch.tensor(clean_indices)
-
-    # --- Step 1: Filter for correctly classified samples ---
-    correct_images = images[clean_indices]
-    correct_targets = targets[clean_indices]
-
-    if len(correct_images) == 0:
-        if return_robust_points:
-            return 0.0, 0.0, torch.tensor([])
-        return 0.0, 0.0
-
-    # --- Step 2: Initialize variables for batch processing ---
-    num_robust_points = 0
-    total_time = 0.0
-    num_batches = (len(correct_images) + batch_size - 1) // batch_size
-    
-    # List to accumulate robust indices across batches
-    robust_indices_list = []
-
-    # --- Step 3: Set up a reusable BoundedModule ---
-    # We only need to create this once
-    dummy_input = correct_images[0:1].to(device)
-    # Note: Ensure auto_LiRPA is installed for BoundedModule
-    bounded_model = BoundedModule(model, dummy_input, bound_opts={"conv_mode": "patches"}, verbose=False)
-    bounded_model.eval()
-
-    print(f"Verifying {len(correct_images)} samples in {num_batches} batches of size {batch_size}...")
-
-    # --- Step 4: Loop through the data in batches ---
-    for i in range(num_batches):
-        start_idx = i * batch_size
-        end_idx = min((i + 1) * batch_size, len(correct_images))
-        
-        batch_images = correct_images[start_idx:end_idx].to(device)
-        batch_targets = correct_targets[start_idx:end_idx]
-        
-        # --- Set up BoundedTensor and specification for the current batch ---
-        
-        if norm == 'inf':
-            ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon, x_U=x_U.expand(batch_images.shape[0], -1, -1, -1), x_L=x_L.expand(batch_images.shape[0], -1, -1, -1))
-        else:
-            ptb = PerturbationLpNorm(norm=norm, eps=epsilon, x_U=x_U.expand(batch_images.shape[0], -1, -1, -1), x_L=x_L.expand(batch_images.shape[0], -1, -1, -1))
-
-        bounded_input = BoundedTensor(batch_images, ptb)
-        
-        num_classes = model[-1].out_features # Assuming last layer is Linear
-        c = build_C(batch_targets.to("cpu"), num_classes).to(device)
-
-        # --- Time the verification for this batch ---
-        if device.type == 'cuda':
-            torch.cuda.synchronize()
-        start_time_batch = time.time()
-        
-        bounded_model.set_bound_opts({'optimize_bound_args': {'iteration': 200, 'early_stop_patience': 30, 'fix_interm_bounds': False, 'enable_opt_interm_bounds':True, 'verbosity':False}, 'verbosity':False})
-        
-        # Compute bounds
-        lb_diff = bounded_model.compute_bounds(x=(bounded_input,), C=c, method='alpha-crown')[0]
-        
-        if device.type == 'cuda':
-            torch.cuda.synchronize()
-        end_time_batch = time.time()
-        
-        total_time += (end_time_batch - start_time_batch)
-
-        # --- Calculate robust points in the current batch ---
-        # Check if lower bound > 0 for all classes (except target)
-        is_robust = (lb_diff.view(len(batch_images), num_classes - 1) > 0).all(dim=1)
-        num_robust_points += torch.sum(is_robust).item()
-        
-        # --- Collect Indices if requested ---
-        if return_robust_points:
-            # 1. Get the global indices corresponding to this batch
-            batch_global_indices = clean_indices[start_idx:end_idx]
-            # 2. Use the boolean mask (moved to cpu) to filter these indices
-            # We move is_robust to CPU to match clean_indices location usually
-            batch_robust_indices = batch_global_indices[is_robust.cpu()]
-            robust_indices_list.append(batch_robust_indices)
-
-        # Optional: Print progress
-        print(f"  Batch {i+1}/{num_batches}: {torch.sum(is_robust).item()}/{len(batch_images)} robust.", end='\r')
-
-    print("\nBatch verification finished.") 
-    
-    # --- Step 5: Calculate final metrics ---
-    # CRA is relative to the TOTAL dataset size (including originally incorrect ones)
-    cra = (num_robust_points / total_num_images) * 100.0
-    mean_time_per_image = total_time / len(correct_images) if len(correct_images) > 0 else 0.0
-
-    if return_robust_points:
-        if len(robust_indices_list) > 0:
-            all_robust_indices = torch.cat(robust_indices_list)
-        else:
-            all_robust_indices = torch.tensor([])
-        return cra, mean_time_per_image, all_robust_indices
-
-    return cra, mean_time_per_image
-
-
-# def compute_alphacrown_vra_and_time_normalization_changed(images, targets, model, lb, ub, batch_size=1, return_robust_points=True, eps=1, x_U=None, x_L=None):
+# def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indices, batch_size=1, norm=2, return_robust_points=False, x_U=None, x_L=None):
 #     """
 #     Computes Certified Robust Accuracy (CRA) using Alpha-Crown in batches to manage memory,
 #     and measures the mean verification time per image.
+    
+#     Args:
+#         images (Tensor): The entire dataset's images.
+#         targets (Tensor): The entire dataset's labels.
+#         model (nn.Module): The model to verify.
+#         epsilon (float): The perturbation radius.
+#         clean_indices (Tensor): Indices of correctly classified images.
+#         batch_size (int): The number of images to verify in each batch.
+#         norm (int or float): The norm (e.g., 2 or np.inf).
+#         return_robust_points (bool): If True, returns the list of global indices of robust images.
+
+#     Returns:
+#         If return_robust_points is False:
+#             (cra, mean_time_per_image)
+#         If return_robust_points is True:
+#             (cra, mean_time_per_image, robust_indices)
 #     """
+
 #     device = next(model.parameters()).device
 #     total_num_images = len(images)
 #     model.eval()
+    
+#     # Ensure clean_indices is a tensor for indexing
+#     if not isinstance(clean_indices, torch.Tensor):
+#         clean_indices = torch.tensor(clean_indices)
+
+#     # --- Step 1: Filter for correctly classified samples ---
+#     correct_images = images[clean_indices]
+#     correct_targets = targets[clean_indices]
+
+#     if len(correct_images) == 0:
+#         if return_robust_points:
+#             return 0.0, 0.0, torch.tensor([])
+#         return 0.0, 0.0
 
 #     # --- Step 2: Initialize variables for batch processing ---
 #     num_robust_points = 0
 #     total_time = 0.0
-#     num_batches = (len(images) + batch_size - 1) // batch_size
+#     num_batches = (len(correct_images) + batch_size - 1) // batch_size
     
 #     # List to accumulate robust indices across batches
 #     robust_indices_list = []
 
 #     # --- Step 3: Set up a reusable BoundedModule ---
-#     dummy_input = images[0:1].to(device)
+#     # We only need to create this once
+#     dummy_input = correct_images[0:1].to(device)
 #     # Note: Ensure auto_LiRPA is installed for BoundedModule
-#     bounded_model = BoundedModule(model, dummy_input, bound_opts={"conv_mode": "patches"}, verbose=False)
+#     # bounded_model = BoundedModule(model, dummy_input, bound_opts={"conv_mode": "patches"}, verbose=False)
+#     bounded_model = BoundedModule(model, dummy_input, verbose=False)
 #     bounded_model.eval()
 
-#     print(f"Verifying {len(images)} samples in {num_batches} batches of size {batch_size}...")
+#     print(f"Verifying {len(correct_images)} samples in {num_batches} batches of size {batch_size}...")
+
+#     #Sanity Check 
+#     print("Verifying data bounds...")
+#     # Allow a tiny margin for floating point errors
+#     margin = 1e-5 
+#     assert (images[clean_indices] >= x_L - margin).all(), "Error: Some inputs are smaller than x_L!"
+#     assert (images[clean_indices] <= x_U + margin).all(), "Error: Some inputs are larger than x_U!"
+#     print("Data is valid within bounds.")
+
+
 
 #     # --- Step 4: Loop through the data in batches ---
 #     for i in range(num_batches):
 #         start_idx = i * batch_size
-#         end_idx = min((i + 1) * batch_size, len(images))
+#         end_idx = min((i + 1) * batch_size, len(correct_images))
         
-#         batch_images = images[start_idx:end_idx].to(device)
-#         batch_targets = targets[start_idx:end_idx]
+#         batch_images = correct_images[start_idx:end_idx].to(device)
+#         batch_targets = correct_targets[start_idx:end_idx]
         
 #         # --- Set up BoundedTensor and specification for the current batch ---
         
-#         ptb = PerturbationLpNorm(norm=np.inf, eps=eps, x_L = lb[start_idx:end_idx], x_U = ub[start_idx:end_idx])
+#         if norm == 'inf':
+#             # ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon, x_U=x_U.expand(batch_images.shape[0], -1, -1, -1), x_L=x_L.expand(batch_images.shape[0], -1, -1, -1))
+#             ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon, x_U=x_U.expand(batch_images.shape[0], -1, -1, -1).contiguous(), x_L=x_L.expand(batch_images.shape[0], -1, -1, -1).contiguous())
+#         else:
+#             ptb = PerturbationLpNorm(norm=norm, eps=epsilon, x_U=x_U.expand(batch_images.shape[0], -1, -1, -1), x_L=x_L.expand(batch_images.shape[0], -1, -1, -1))
+#             # ptb = PerturbationLpNorm(norm=norm, eps=epsilon, x_U=x_U, x_L=x_L)
 
 #         bounded_input = BoundedTensor(batch_images, ptb)
         
-#         # WARNING: Ensure Gemm_33 exists on your model. 
-#         # Generally safer to use len(classes) if available, but keeping your code as is.
-#         num_classes = model.Gemm_33.out_features 
-
+#         num_classes = model[-1].out_features # Assuming last layer is Linear
 #         c = build_C(batch_targets.to("cpu"), num_classes).to(device)
 
 #         # --- Time the verification for this batch ---
@@ -966,12 +1058,11 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
 #             torch.cuda.synchronize()
 #         start_time_batch = time.time()
         
-#         # Note: method='crown' with optimize_bound_args typically requires method='CROWN-Optimized' 
-#         # or similar depending on version, but keeping your settings.
 #         bounded_model.set_bound_opts({'optimize_bound_args': {'iteration': 200, 'early_stop_patience': 30, 'fix_interm_bounds': False, 'enable_opt_interm_bounds':True, 'verbosity':False}, 'verbosity':False})
         
 #         # Compute bounds
-#         lb_diff = bounded_model.compute_bounds(x=(bounded_input,), C=c, method='crown')[0]
+#         lb_diff = bounded_model.compute_bounds(x=(bounded_input,), C=c, method='alpha-crown')[0]
+#         # lb_diff = bounded_model.compute_bounds(x=(bounded_input,), C=c, method='IBP')[0]
         
 #         if device.type == 'cuda':
 #             torch.cuda.synchronize()
@@ -984,15 +1075,13 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
 #         is_robust = (lb_diff.view(len(batch_images), num_classes - 1) > 0).all(dim=1)
 #         num_robust_points += torch.sum(is_robust).item()
         
-#         # --- Collect Indices if requested (FIXED HERE) ---
+#         # --- Collect Indices if requested ---
 #         if return_robust_points:
-#             # 1. Create a tensor of global indices for this batch (integers)
-#             # instead of slicing the image tensor
-#             batch_global_indices = torch.arange(start_idx, end_idx)
-            
+#             # 1. Get the global indices corresponding to this batch
+#             batch_global_indices = clean_indices[start_idx:end_idx]
 #             # 2. Use the boolean mask (moved to cpu) to filter these indices
+#             # We move is_robust to CPU to match clean_indices location usually
 #             batch_robust_indices = batch_global_indices[is_robust.cpu()]
-            
 #             robust_indices_list.append(batch_robust_indices)
 
 #         # Optional: Print progress
@@ -1001,17 +1090,158 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
 #     print("\nBatch verification finished.") 
     
 #     # --- Step 5: Calculate final metrics ---
+#     # CRA is relative to the TOTAL dataset size (including originally incorrect ones)
 #     cra = (num_robust_points / total_num_images) * 100.0
-#     mean_time_per_image = total_time / len(images) if len(images) > 0 else 0.0
+#     mean_time_per_image = total_time / len(correct_images) if len(correct_images) > 0 else 0.0
 
 #     if return_robust_points:
 #         if len(robust_indices_list) > 0:
 #             all_robust_indices = torch.cat(robust_indices_list)
 #         else:
-#             all_robust_indices = torch.tensor([], dtype=torch.long) # Return empty long tensor
+#             all_robust_indices = torch.tensor([])
 #         return cra, mean_time_per_image, all_robust_indices
 
 #     return cra, mean_time_per_image
+
+def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indices, batch_size=2, norm=2, return_robust_points=False, x_U=None, x_L=None):
+    """
+    Computes Certified Robust Accuracy (CRA) using Alpha-Crown.
+    
+    CRITICAL NOTE: 
+    x_L and x_U here should represent the GLOBAL valid data range (e.g. 0 and 1), 
+    NOT the local epsilon bounds. The function handles the epsilon intersection internally.
+    """
+
+    device = next(model.parameters()).device
+    total_num_images = images.shape[0]
+    model.eval()
+    
+    if not isinstance(clean_indices, torch.Tensor):
+        clean_indices = torch.tensor(clean_indices)
+
+    # --- Step 1: Filter for correctly classified samples ---
+    correct_images = images[clean_indices]
+    correct_targets = targets[clean_indices]
+
+    if len(correct_images) == 0:
+        if return_robust_points:
+            return 0.0, 0.0, torch.tensor([])
+        return 0.0, 0.0
+
+    # --- Step 2: Initialize variables ---
+    num_robust_points = 0
+    total_time = 0.0
+    num_batches = (len(correct_images) + batch_size - 1) // batch_size
+    robust_indices_list = []
+
+    # --- Step 3: Setup BoundedModule ---
+    # We disable "patches" mode to ensure stability with explicit bounds
+    dummy_input = correct_images[0:1].to(device)
+    bounded_model = BoundedModule(model, dummy_input, bound_opts={"conv_mode": "patches"}, verbose=False)
+    # bounded_model = BoundedModule(model, dummy_input, verbose=False)
+    bounded_model.eval()
+
+    print(f"Verifying {len(correct_images)} samples in {num_batches} batches...")
+
+    # --- Step 4: Batch Loop ---
+    for i in range(num_batches):
+        start_idx = i * batch_size
+        end_idx = min((i + 1) * batch_size, len(correct_images))
+        
+        # Clone to avoid modifying original dataset
+        batch_images = correct_images[start_idx:end_idx].clone().to(device)
+        batch_targets = correct_targets[start_idx:end_idx]
+        current_bs = batch_images.shape[0]
+
+        # --- A. Prepare Global Domain Bounds (0 to 1) ---
+        # Expand global limits (x_L/x_U) to match current batch shape and ensure contiguity
+        if x_L is not None:
+            batch_global_L = x_L.expand(current_bs, *x_L.shape[1:]).contiguous()
+        else:
+            batch_global_L = None
+            
+        if x_U is not None:
+            batch_global_U = x_U.expand(current_bs, *x_U.shape[1:]).contiguous()
+        else:
+            batch_global_U = None
+
+        # --- B. CLAMP IMAGES (Crucial for Stability) ---
+        # Ensure the center point 'x' is mathematically inside the global domain [0, 1]
+        # This prevents the "Invalid Center" crash.
+        if batch_global_L is not None and batch_global_U is not None:
+            batch_images = torch.max(torch.min(batch_images, batch_global_U), batch_global_L)
+
+        # --- C. Define Perturbation Constraints ---
+        
+        if norm == 'inf' or norm == float('inf'):
+            # STRATEGY: TIGHT BOX INTERSECTION
+            # ptb_L = max(Global_Min, x - epsilon)
+            # ptb_U = min(Global_Max, x + epsilon)
+            
+            # We calculate this manually to give the verifier the easiest job possible.
+            if batch_global_L is not None and batch_global_U is not None:
+                ptb_L = torch.max(batch_global_L, batch_images - epsilon)
+                ptb_U = torch.min(batch_global_U, batch_images + epsilon)
+                
+                ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon, x_L=ptb_L, x_U=ptb_U)
+            else:
+                # Fallback if no global bounds provided
+                ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon)
+                
+        else:
+            # STRATEGY: GLOBAL BOUNDS + EPSILON SPHERE (Best for L2)
+            # For L2, we don't intersect with a box (which would imply Linf). 
+            # We just say "Don't go past 0 or 1" using x_L/x_U.
+            ptb = PerturbationLpNorm(norm=norm, eps=epsilon, x_L=batch_global_L, x_U=batch_global_U)
+
+        bounded_input = BoundedTensor(batch_images, ptb)
+        
+        num_classes = model[-1].out_features 
+        c = build_C(batch_targets.to("cpu"), num_classes).to(device)
+
+        # --- Time the verification ---
+        if device.type == 'cuda':
+            torch.cuda.synchronize()
+        start_time_batch = time.time()
+        
+        # Optimize bounds (Alpha-CROWN settings)
+        bounded_model.set_bound_opts({
+            'optimize_bound_args': {
+                'iteration': 200, 
+                'early_stop_patience': 30, 
+                'enable_opt_interm_bounds': True, 
+                'verbosity': False
+            }, 
+            'verbosity': False
+        })
+        
+        lb_diff = bounded_model.compute_bounds(x=(bounded_input,), C=c, method='alpha-crown')[0]
+        
+        if device.type == 'cuda':
+            torch.cuda.synchronize()
+        end_time_batch = time.time()
+        total_time += (end_time_batch - start_time_batch)
+
+        # --- Check Robustness ---
+        is_robust = (lb_diff.view(current_bs, num_classes - 1) > 0).all(dim=1)
+        num_robust_points += torch.sum(is_robust).item()
+        
+        if return_robust_points:
+            batch_global_indices = clean_indices[start_idx:end_idx]
+            robust_indices_list.append(batch_global_indices[is_robust.cpu()])
+
+        print(f"  Batch {i+1}/{num_batches}: {torch.sum(is_robust).item()}/{current_bs} robust.", end='\r')
+
+    print("\nBatch verification finished.") 
+    
+    cra = (num_robust_points / total_num_images) * 100.0
+    mean_time_per_image = total_time / len(correct_images) if len(correct_images) > 0 else 0.0
+
+    if return_robust_points:
+        all_robust_indices = torch.cat(robust_indices_list) if robust_indices_list else torch.tensor([])
+        return cra, mean_time_per_image, all_robust_indices
+
+    return cra, mean_time_per_image
 
 import time
 import torch
@@ -1025,21 +1255,99 @@ import time  # Import the time module
 import logging
 logging.getLogger('auto_LiRPA').setLevel(logging.WARNING)
 
-def compute_alphabeta_vra_and_time(dataset_name, model_name, model_path, epsilon, CONFIG_FILE, clean_indices, norm='inf'):
+# def compute_alphabeta_vra_and_time(dataset_name, model_name, model_path, epsilon, CONFIG_FILE, clean_indices, norm='inf'):
+#     """
+#     Computes Certified Robust Accuracy (CRA) using α-β-CROWN and
+#     measures the mean verification time per image.
+#     """
+#     if dataset_name=='cifar10':
+#         dataset = 'CIFAR_SDP'
+#     elif dataset_name=='mnist':
+#         dataset = 'MNIST_SDP'
+#     else :
+#         raise ValueError(f"Unsupported dataset")
+    
+#     params = {
+#             'model': model_name,
+#             'load_model': model_path,  # Use 'load_model' for the path
+#             'dataset': dataset,
+#             'epsilon': epsilon,
+#         }
+
+#     # Compute the lower bounds on the logit differences using α-β-CROWN
+#     verifier = ABCROWN(
+#             args=[],
+#             config=CONFIG_FILE,
+#             **params
+#         )
+    
+#     # --- Start Timing ---
+#     start_time = time.time()
+    
+#     summary = verifier.main()
+    
+#     end_time = time.time()
+#     # --- End Timing ---
+
+
+#     # --- Calculate Total Samples Verified ---
+#     # This is more robust than hardcoding 200
+#     total_samples_verified = sum(len(v) for v in summary.values())
+
+#     # --- Calculate Average Time ---
+#     total_time = end_time - start_time
+#     avg_time = total_time / total_samples_verified if total_samples_verified > 0 else 0
+
+
+#     # --- Accuracy Calculations ---
+#     clean_indices_set = {t.item() for t in clean_indices}
+#     validated_indices_set = set()
+#     validated_keys = ['safe-incomplete', 'safe']
+    
+#     # Note: 'total_validated' here means "total proven safe", not "total processed"
+#     total_proven_safe = 0 
+
+#     for key in validated_keys:
+#         validated_indices_set.update(summary.get(key, []))
+#         total_proven_safe += len(summary.get(key, [])) # .get() is safer if a key might be missing
+
+#     validated_clean_indices = validated_indices_set.intersection(clean_indices_set)
+#     count_validated_clean = len(validated_clean_indices)
+
+#     denominator = len(clean_indices)
+#     certified_robust_accuracy = (count_validated_clean / denominator) * 100 if denominator > 0 else 0
+
+#     print(f"🚀 Verification Complete!")
+#     print(f"   - Total samples verified: {total_samples_verified}")
+#     print(f"   - Correctly classified (clean): {denominator}")
+#     print(f"   - Correctly classified AND robust (clean & safe): {count_validated_clean}")
+#     print(f"   - Certified Robust Accuracy: {certified_robust_accuracy:.2f}%")
+#     print(f"   - Total verification time: {total_time:.2f} seconds")
+#     print(f"   - Average time per sample: {avg_time:.4f} seconds")
+#     # import pdb; pdb.set_trace()
+
+#     return certified_robust_accuracy, avg_time
+
+
+def compute_alphabeta_vra_and_time(dataset_name, model_name, model_path, epsilon, CONFIG_FILE, clean_indices, total_samples, norm='inf', return_robust_points=False):
     """
-    Computes Certified Robust Accuracy (CRA) using α-β-CROWN and
-    measures the mean verification time per image.
+    Computes True VRA (Verified Robust Accuracy) relative to the TOTAL dataset size.
+    
+    Args:
+        total_samples (int): The total number of images in the chunk being verified 
+                             (including misclassified ones).
+        return_robust_points (bool): If True, returns a tensor of indices that are robust.
     """
     if dataset_name=='cifar10':
         dataset = 'CIFAR_SDP'
     elif dataset_name=='mnist':
         dataset = 'MNIST_SDP'
     else :
-        raise ValueError(f"Unsupported dataset")
+        raise ValueError(f"Unsupported dataset: {dataset_name}")
     
     params = {
             'model': model_name,
-            'load_model': model_path,  # Use 'load_model' for the path
+            'load_model': model_path,
             'dataset': dataset,
             'epsilon': epsilon,
         }
@@ -1053,58 +1361,61 @@ def compute_alphabeta_vra_and_time(dataset_name, model_name, model_path, epsilon
     
     # --- Start Timing ---
     start_time = time.time()
-    
     summary = verifier.main()
-    
     end_time = time.time()
     # --- End Timing ---
 
-
-    # --- Calculate Total Samples Verified ---
-    # This is more robust than hardcoding 200
-    total_samples_verified = sum(len(v) for v in summary.values())
-
-    # --- Calculate Average Time ---
-    total_time = end_time - start_time
-    avg_time = total_time / total_samples_verified if total_samples_verified > 0 else 0
-
-
-    # --- Accuracy Calculations ---
-    clean_indices_set = {t.item() for t in clean_indices}
-    validated_indices_set = set()
-    validated_keys = ['safe-incomplete', 'safe']
+    # --- Metrics ---
+    # Convert clean_indices to a set of Python integers for intersection logic
+    if isinstance(clean_indices, torch.Tensor):
+        clean_indices_set = {t.item() for t in clean_indices}
+    else:
+        clean_indices_set = set(clean_indices)
     
-    # Note: 'total_validated' here means "total proven safe", not "total processed"
-    total_proven_safe = 0 
-
-    for key in validated_keys:
+    # 1. Collect all "Safe" indices from the verifier
+    validated_indices_set = set()
+    # "safe" = verified robust, "safe-incomplete" = verified robust (often bound propagation)
+    for key in ['safe-incomplete', 'safe']: 
         validated_indices_set.update(summary.get(key, []))
-        total_proven_safe += len(summary.get(key, [])) # .get() is safer if a key might be missing
 
-    validated_clean_indices = validated_indices_set.intersection(clean_indices_set)
-    count_validated_clean = len(validated_clean_indices)
+    # 2. Filter: We only count them if they were ORIGINALLY correct (Clean AND Robust)
+    validated_clean_indices_set = validated_indices_set.intersection(clean_indices_set)
+    num_robust_points = len(validated_clean_indices_set)
 
-    denominator = len(clean_indices)
-    certified_robust_accuracy = (count_validated_clean / denominator) * 100 if denominator > 0 else 0
+    # 3. True VRA Calculation
+    # We divide by the TOTAL samples, not just the clean ones
+    true_vra = (num_robust_points / total_samples) * 100.0
+    
+    # Optional: Conditional VRA (for debugging)
+    conditional_vra = (num_robust_points / len(clean_indices)) * 100.0 if len(clean_indices) > 0 else 0
+
+    # 4. Timing
+    total_time = end_time - start_time
+    avg_time = total_time / total_samples if total_samples > 0 else 0
 
     print(f"🚀 Verification Complete!")
-    print(f"   - Total samples verified: {total_samples_verified}")
-    print(f"   - Correctly classified (clean): {denominator}")
-    print(f"   - Correctly classified AND robust (clean & safe): {count_validated_clean}")
-    print(f"   - Certified Robust Accuracy: {certified_robust_accuracy:.2f}%")
-    print(f"   - Total verification time: {total_time:.2f} seconds")
-    print(f"   - Average time per sample: {avg_time:.4f} seconds")
-    # import pdb; pdb.set_trace()
+    print(f"   - Total Dataset Size: {total_samples}")
+    print(f"   - Clean Samples: {len(clean_indices)}")
+    print(f"   - Verified Robust (Clean & Safe): {num_robust_points}")
+    print(f"   - True VRA: {true_vra:.2f}%")
+    print(f"   - (Conditional Robustness: {conditional_vra:.2f}%)")
+    print(f"   - Avg Time/Sample: {avg_time:.4f}s")
 
-    return certified_robust_accuracy, avg_time
+    # 5. Return Results
+    if return_robust_points:
+        # Convert the set back to a sorted Torch Tensor
+        robust_indices_tensor = torch.tensor(sorted(list(validated_clean_indices_set)), dtype=torch.long)
+        return true_vra, avg_time, robust_indices_tensor
+
+    return true_vra, avg_time
 
 
 sys.path.append('/home/aws_install/robustess_project/SDP-CROWN')
 from sdp_crown import verified_sdp_crown
 
 
-def compute_sdp_crown_vra(dataset, labels, model, radius, clean_output, device, classes, args, return_robust_points=False, x_U=None, x_L=None):
-    return verified_sdp_crown(dataset, labels, model, radius, clean_output, device, classes, args, return_robust_points=return_robust_points, x_U=x_U, x_L=x_L)
+def compute_sdp_crown_vra(dataset, labels, model, radius, clean_output, device, classes, args, batch_size=1, return_robust_points=False, x_U=None, x_L=None):
+    return verified_sdp_crown(dataset, labels, model, radius, clean_output, device, classes, args, batch_size, return_robust_points=return_robust_points, x_U=x_U, x_L=x_L)
 
 if __name__ == '__main__':
     download_s3_folder()
