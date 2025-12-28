@@ -38,11 +38,11 @@ MODEL_DIR="./models"
 
 # L_inf: 0.01 to 0.40 with step 0.002
 # Example: 0.010, 0.012, 0.014 ... 0.400 (~196 values)
-EPSILONS_LINF=($(seq -f "%.3f" 0.005  0.002 0.40))
+EPSILONS_LINF=($(seq -f "%.3f" 0.005  0.004 0.30))
 # 0.005
 # L_2: 0.05 to 2.00 with step 0.01
 # Example: 0.05, 0.06, 0.07 ... 2.00 (~196 values)
-EPSILONS_L2=($(seq -f "%.2f" 0.005  0.01 2.00))
+EPSILONS_L2=($(seq -f "%.2f" 0.05  0.02 2.2))
 # 0.005
 # 3. Experiment Loop
 # ------------------------------------------------------------------------------
@@ -52,6 +52,9 @@ echo "Total models: ${#MODELS[@]}"
 echo "L_inf density: ${#EPSILONS_LINF[@]} epsilons per model"
 echo "L_2 density:   ${#EPSILONS_L2[@]} epsilons per model"
 echo "----------------------------------------------------------------"
+
+# Variable pour identifier le premier modèle
+is_first_model=true
 
 for model_file in "${MODELS[@]}"; do
     # 1. Clean filename
@@ -65,26 +68,26 @@ for model_file in "${MODELS[@]}"; do
     echo " > Architecture: $model_func_name"
 
     # --- Run L_inf Experiments ---
-    echo "  > Starting L_inf perturbations..."
-    for eps in "${EPSILONS_LINF[@]}"; do
-        # Only echo status every 10 steps to reduce terminal spam
-        # Remove the 'if' condition if you want to see every line
-        # if (( $(echo "$eps * 1000" | bc | cut -d. -f1) % 20 == 0 )); then
+    if [ "$is_first_model" = true ]; then
+        echo "  > [SKIP] Linf robustness skipped for the first model."
+    else
+        echo "  > Starting L_inf perturbations..."
+        for eps in "${EPSILONS_LINF[@]}"; do
             echo "    Model: $model_name_clean | Norm: Linf | Epsilon: $eps"
-        # fi
-        
-        python main.py \
-            --model "$model_func_name" \
-            --dataset mnist \
-            --model_path "${MODEL_DIR}/${model_file}" \
-            --norm "inf" \
-            --epsilon "$eps" \
-            --output_csv "./results/${model_name_clean}_linf_.csv" > /dev/null 2>&1
             
-        if [ $? -ne 0 ]; then
-            echo "    [ERROR] Experiment failed for $model_name_clean (Linf, eps=$eps)"
-        fi
-    done
+            python main.py \
+                --model "$model_func_name" \
+                --dataset mnist \
+                --model_path "${MODEL_DIR}/${model_file}" \
+                --norm "inf" \
+                --epsilon "$eps" \
+                --output_csv "./results/${model_name_clean}_linf_.csv" > /dev/null 2>&1
+                
+            if [ $? -ne 0 ]; then
+                echo "    [ERROR] Experiment failed for $model_name_clean (Linf, eps=$eps)"
+            fi
+        done
+    fi
 
     # --- Run L_2 Experiments ---
     echo "  > Starting L_2 perturbations..."
@@ -102,6 +105,9 @@ for model_file in "${MODELS[@]}"; do
             echo "    [ERROR] Experiment failed for $model_name_clean (L2, eps=$eps)"
         fi
     done
+
+    # Une fois le premier modèle traité, on passe le flag à false
+    is_first_model=false
 
     echo "----------------------------------------------------------------"
 done
