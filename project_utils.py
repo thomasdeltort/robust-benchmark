@@ -5,12 +5,12 @@ import torch
 import torch.nn as nn
 import os
 from models import * # Make sure this import works from your utils.py location
-try:
-    sys.path.append('/home/aws_install/robustess_project/lip_notebooks/notebooks_creation_models')
-    from VGG_Arthur import HKRMultiLossLSE
-except ImportError:
-    print("Warning: Could not import HKRMultiLossLSE. Using standard CrossEntropyLoss for evaluation.")
-import pickle
+# try:
+#     sys.path.append('/home/aws_install/robustess_project/lip_notebooks/notebooks_creation_models')
+#     from VGG_Arthur import HKRMultiLossLSE
+# except ImportError:
+#     print("Warning: Could not import HKRMultiLossLSE. Using standard CrossEntropyLoss for evaluation.")
+# import pickle
 import numpy as np
 import torchattacks
 import matplotlib.pyplot as plt
@@ -25,67 +25,67 @@ from torchvision.transforms import v2
 from torchvision import datasets
 from torch.utils.data import DataLoader
 
-import boto3
+# import boto3
 import os
-from botocore.exceptions import NoCredentialsError, ClientError
+# from botocore.exceptions import NoCredentialsError, ClientError
 
-def download_s3_folder(bucket_name="tdrobustbucket", s3_folder="lip_models", local_dir="./models"):
-    """
-    Downloads an S3 folder to a local directory.
-    """
-    s3 = boto3.client('s3')
+# def download_s3_folder(bucket_name="tdrobustbucket", s3_folder="lip_models", local_dir="./models"):
+#     """
+#     Downloads an S3 folder to a local directory.
+#     """
+#     s3 = boto3.client('s3')
 
-    # Ensure the local directory exists
-    if not os.path.exists(local_dir):
-        os.makedirs(local_dir)
+#     # Ensure the local directory exists
+#     if not os.path.exists(local_dir):
+#         os.makedirs(local_dir)
 
-    # Handle pagination in case there are many models
-    paginator = s3.get_paginator('list_objects_v2')
-    pages = paginator.paginate(Bucket=bucket_name, Prefix=s3_folder)
+#     # Handle pagination in case there are many models
+#     paginator = s3.get_paginator('list_objects_v2')
+#     pages = paginator.paginate(Bucket=bucket_name, Prefix=s3_folder)
 
-    print(f"--- Starting sync from s3://{bucket_name}/{s3_folder} to {local_dir} ---")
+#     print(f"--- Starting sync from s3://{bucket_name}/{s3_folder} to {local_dir} ---")
 
-    download_count = 0
+#     download_count = 0
 
-    try:
-        for page in pages:
-            # Check if the folder is empty
-            if 'Contents' not in page:
-                continue
+#     try:
+#         for page in pages:
+#             # Check if the folder is empty
+#             if 'Contents' not in page:
+#                 continue
 
-            for obj in page['Contents']:
-                s3_key = obj['Key']
+#             for obj in page['Contents']:
+#                 s3_key = obj['Key']
                 
-                # Skip directory markers (keys ending in /)
-                if s3_key.endswith('/'):
-                    continue
+#                 # Skip directory markers (keys ending in /)
+#                 if s3_key.endswith('/'):
+#                     continue
 
-                # Remove the 'lip_models/' prefix to map correctly to './models/'
-                # e.g., 'lip_models/model.pth' becomes 'model.pth'
-                relative_path = os.path.relpath(s3_key, s3_folder)
-                local_file_path = os.path.join(local_dir, relative_path)
+#                 # Remove the 'lip_models/' prefix to map correctly to './models/'
+#                 # e.g., 'lip_models/model.pth' becomes 'model.pth'
+#                 relative_path = os.path.relpath(s3_key, s3_folder)
+#                 local_file_path = os.path.join(local_dir, relative_path)
 
-                # Create local subdirectories if they exist in S3 structure
-                local_file_dir = os.path.dirname(local_file_path)
-                if not os.path.exists(local_file_dir):
-                    os.makedirs(local_file_dir)
+#                 # Create local subdirectories if they exist in S3 structure
+#                 local_file_dir = os.path.dirname(local_file_path)
+#                 if not os.path.exists(local_file_dir):
+#                     os.makedirs(local_file_dir)
 
-                # Download
-                print(f"Downloading: {s3_key} -> {local_file_path}")
-                s3.download_file(bucket_name, s3_key, local_file_path)
-                download_count += 1
+#                 # Download
+#                 print(f"Downloading: {s3_key} -> {local_file_path}")
+#                 s3.download_file(bucket_name, s3_key, local_file_path)
+#                 download_count += 1
 
-        if download_count == 0:
-            print("No files found in the specified S3 folder.")
-        else:
-            print(f"\nSuccess! {download_count} files downloaded.")
+#         if download_count == 0:
+#             print("No files found in the specified S3 folder.")
+#         else:
+#             print(f"\nSuccess! {download_count} files downloaded.")
 
-    except NoCredentialsError:
-        print("Error: AWS credentials not found. Please run 'aws configure'.")
-    except ClientError as e:
-        print(f"AWS Client Error: {e}")
-    except Exception as e:
-        print(f"Unexpected Error: {e}")
+#     except NoCredentialsError:
+#         print("Error: AWS credentials not found. Please run 'aws configure'.")
+#     except ClientError as e:
+#         print(f"AWS Client Error: {e}")
+#     except Exception as e:
+#         print(f"Unexpected Error: {e}")
 
 if __name__ == "__main__":
     # --- Configuration matches your training script ---
@@ -93,7 +93,7 @@ if __name__ == "__main__":
     S3_FOLDER = "lip_models" 
     LOCAL_DIRECTORY = "./models" 
 
-    download_s3_folder(BUCKET_NAME, S3_FOLDER, LOCAL_DIRECTORY)
+    # download_s3_folder(BUCKET_NAME, S3_FOLDER, LOCAL_DIRECTORY)
 
 def load_cifar10(batch_size, aug_level='medium'):
     """
@@ -240,6 +240,25 @@ def load_dataset_benchmark(args):
     else:
         raise ValueError(f"Unexpected model: {args.model}")
     return dataset, labels, range, classes
+
+def load_dataset_benchmark_auto(args):
+    if "mnist" in args.dataset.lower():
+        dataset = np.load('./prepared_data/mnist/X_sdp.npy')
+        labels = np.load('./prepared_data/mnist/y_sdp.npy')
+        dataset = torch.from_numpy(dataset).permute(0,3,1,2)
+        labels = torch.from_numpy(labels)
+        classes = 10
+    elif "cifar10" in args.dataset.lower():
+        dataset = np.load('./prepared_data/cifar/X_sdp.npy')
+        labels = np.load('./prepared_data/cifar/y_sdp.npy')
+        dataset = preprocess_cifar(dataset)
+        dataset = torch.from_numpy(dataset).permute(0,3,1,2)
+        print(dataset.shape, "we need to verify channel first")
+        labels = torch.from_numpy(labels)
+        classes = 10
+    else:
+        raise ValueError(f"Unexpected model: {args.model}")
+    return dataset, labels, classes
 
 
 
@@ -919,7 +938,7 @@ def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indic
 # unsafe-pgd (total 81), index: [3, 4, 5, 6, 9, 10, 11, 12, 15, 16, 19, 23, 25, 26, 29, 35, 36, 43, 44, 45, 46, 50, 53, 56, 57, 61, 63, 65, 67, 72, 75, 76, 77, 78, 88, 90, 92, 94, 96, 97, 100, 102, 105, 106, 107, 113, 119, 120, 123, 124, 125, 127, 128, 129, 130, 132, 134, 138, 141, 143, 147, 149, 150, 151, 152, 155, 156, 162, 163, 165, 169, 170, 173, 176, 178, 184, 185, 191, 193, 196, 198]
 # safe (total 1), index: [58]
 import sys
-sys.path.insert(0,'/home/aws_install/robustess_project/SDP-CROWN')
+sys.path.insert(0,'/home/thomas.deltort/SDP-CROWN')
 import auto_LiRPA
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
@@ -1246,7 +1265,8 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
 import time
 import torch
 import numpy as np
-sys.path.append("/home/aws_install/robustess_project/alpha-beta-CROWN/complete_verifier")
+
+sys.path.append("/home/thomas.deltort/alpha-beta-CROWN/complete_verifier")
 from abcrown import ABCROWN # Import the main class from your script
 
 
@@ -1410,7 +1430,7 @@ def compute_alphabeta_vra_and_time(dataset_name, model_name, model_path, epsilon
     return true_vra, avg_time
 
 
-sys.path.append('/home/aws_install/robustess_project/SDP-CROWN')
+sys.path.append('/home/thomas.deltort/SDP-CROWN')
 from sdp_crown import verified_sdp_crown
 
 

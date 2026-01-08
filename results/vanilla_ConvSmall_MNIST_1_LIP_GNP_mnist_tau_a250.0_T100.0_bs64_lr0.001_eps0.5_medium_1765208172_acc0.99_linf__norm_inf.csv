@@ -1,0 +1,5 @@
+epsilon,certificate,pgd,aa,lirpa_alphacrown,lirpa_betacrown,sdp,time_cra,time_pgd,time_aa,time_lirpa_alpha,time_lirpa_beta,time_sdp
+0.005,78.0,0,98.5,98.5,98.5,0,0.0,0,0.053,1.737,0.543,0
+0.105,0.0,0,1.0,0.0,0.0,0,0.0,0,0.053,2.802,0.622,0
+0.205,0.0,0,0.0,0.0,0.0,0,0.0,0,0.001,2.799,0.017,0
+0.305,0.0,0,0.0,0.0,0.0,0,0.0,0,0.001,2.808,0.017,0

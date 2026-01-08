@@ -67,22 +67,23 @@ def find_max_epsilon_binary(images, targets, model, clean_indices, args, tol=0.0
     This defines the upper bound for our systematic paving.
     """
     print(f"\n[Phase 1] Binary Search for Empirical Boundary (Norm: {args.norm})")
-    low = 0.0001
-    high = args.max_search_epsilon  # Hard cap for search
-    best_eps = low
+    low = 0.00001
+    low_rescaled = low / 0.225 if "cifar" in args.dataset.lower() else low
+    high_rescaled = args.max_search_epsilon / 0.225 if "cifar" in args.dataset.lower() else args.max_search_epsilon
+    best_eps = low_rescaled
     
     # Check if high is already broken
-    era, _, _ = compute_autoattack_era_and_time(
-        images, targets, model, high, clean_indices, 
+    era, _ = compute_autoattack_era_and_time(
+        images, targets, model, high_rescaled, clean_indices, 
         norm=str(args.norm), dataset_name=args.dataset
     )
     if era > 0:
-        print(f"  Warning: Model still robust at hard cap ({high}). Using hard cap as max.")
-        return high
+        print(f"  Warning: Model still robust at hard cap ({args.max_search_epsilon}). Using hard cap as max.")
+        return args.max_search_epsilon
 
-    while (high - low) > tol:
-        mid = (low + high) / 2
-        era, _, _ = compute_autoattack_era_and_time(
+    while (high_rescaled - low_rescaled) > tol:
+        mid = (low_rescaled + high_rescaled) / 2
+        era, _ = compute_autoattack_era_and_time(
             images, targets, model, mid, clean_indices, 
             norm=str(args.norm), dataset_name=args.dataset
         )
@@ -90,29 +91,36 @@ def find_max_epsilon_binary(images, targets, model, clean_indices, args, tol=0.0
         
         if era > 0:
             best_eps = mid
-            low = mid  # Model survives, try larger epsilon
+            low_rescaled = mid  # Model survives, try larger epsilon
         else:
-            high = mid # Model is fully broken, go smaller
+            high_rescaled = mid # Model is fully broken, go smaller
             
     print(f"Found Empirical Boundary at Epsilon: {best_eps:.4f}")
+    best_eps = best_eps * 0.225 if "cifar" in args.dataset.lower() else best_eps
     return best_eps
 
 # --- 2. Main Logic ---
 def main():
     parser = argparse.ArgumentParser(description='Intelligent Robustness Evaluation')
-    parser.add_argument('--norm', default='2', choices=['2', 'inf'])
+    parser.add_argument('--norm', default=2, choices=[2, 'inf'])
     parser.add_argument('--model_path', type=str, required=True)
     parser.add_argument('--model', type=str, required=True)
     parser.add_argument('--dataset', type=str, required=True, choices=['cifar10', 'mnist'])
-    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--batch_size', type=int, default=1)
     parser.add_argument('--output_csv', type=str, default='results/study.csv')
-    parser.add_argument('--num_points', type=int, default=8, help='Points to sample in linear paving')
-    parser.add_argument('--max_search_epsilon', type=float, default=1.0, help='Max limit for binary search')
+    parser.add_argument('--num_points', type=int, default=10, help='Points to sample in linear paving')
+    parser.add_argument('--max_search_epsilon', type=float, default=3.0, help='Max limit for binary search')
+
+     # SDP Crown parameters
+    parser.add_argument('--start', default=0, type=int, help='start index for the dataset')
+    parser.add_argument('--end', default=200, type=int, help='end index for the dataset')
+    parser.add_argument('--lr_alpha', default=0.5, type=float, help='alpha learning rate')
+    parser.add_argument('--lr_lambda', default=0.05, type=float, help='lambda learning rate')
     args = parser.parse_args()
 
     # Setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    images, targets, _, classes = load_dataset_benchmark(args)
+    images, targets, classes = load_dataset_benchmark_auto(args)
     model = load_model(args, model_zoo, device)
     model.eval()
 
@@ -125,24 +133,34 @@ def main():
         clean_acc = (len(clean_indices) / len(targets)) * 100
         print(f"Clean Accuracy: {clean_acc:.2f}% ({len(clean_indices)} samples)")
 
+    # --- Initialize Robustness Registry ---
+    # This will track exactly which points are robust across all epsilon steps
+    registry = RobustnessRegistry(
+        model_name=args.model,
+        norm=str(args.norm),
+        total_dataset_size=images.shape[0],
+        save_dir="./results/robust_points"
+    )
+    # Register "clean" points as a baseline (epsilon 0 equivalent)
+    registry.register(0.0, "clean", clean_indices)
+
     # Phase 1: Binary Search for Boundary
     max_eps = find_max_epsilon_binary(images, targets, model, clean_indices, args)
 
     # Phase 2: Systematic Paving
-    # We create a range from 0.0001 (nearly 0) to our found max boundary
-    epsilon_range = np.linspace(0.0001, max_eps, args.num_points)
+    # Here we are in the space of rescaled epsilon (already /0.255 if cifar, nothing if mnist)
+    epsilon_range = np.linspace(0.00001, max_eps, args.num_points)
     
-    # Solver status: if a solver returns 0, we disable it for higher epsilons
     solvers = {
         "aa": True, 
         "cra": True, 
         "alphacrown": True, 
-        "heavy_certified": True # Beta or SDP
+        "heavy_certified": True 
     }
 
     print(f"\n[Phase 2] Paving Range [0, {max_eps:.4f}] with {args.num_points} steps.")
 
-    for eps in epsilon_range:
+    for eps in epsilon_range[::-1]:
         print(f"\n--- EVALUATING EPSILON: {eps:.5f} ---")
         eps_rescaled = eps / 0.225 if "cifar" in args.dataset.lower() else eps
         result_dict = {'epsilon': eps}
@@ -154,6 +172,8 @@ def main():
                 norm=str(args.norm), dataset_name=args.dataset, return_robust_points=True
             )
             result_dict['aa'], result_dict['time_aa'] = era, t_aa
+            registry.register(eps, "autoattack", idx_aa) # Register indices
+            
             if era <= 0: solvers["aa"] = False
         else:
             result_dict['aa'], result_dict['time_aa'] = 0.0, 0.0
@@ -164,31 +184,34 @@ def main():
             if solvers["cra"]:
                 L_2 = 1
                 L = convert_lipschitz_constant(L_2, str(args.norm), images[0].numel())
-                _, cra_val, t_cra, _ = compute_certificates_CRA(
+                _, cra_val, t_cra, idx_cra = compute_certificates_CRA(
                     images, model, eps_rescaled, clean_indices, norm=str(args.norm), L=L, return_robust_points=True
                 )
                 result_dict['certificate'], result_dict['time_cra'] = cra_val, t_cra
+                registry.register(eps, "certificate", idx_cra) # Register indices
+                
                 if cra_val <= 0: solvers["cra"] = False
             else:
                 result_dict['certificate'] = 0.0
 
             # --- Bounds setup for Crown methods ---
-            # (Assuming standard range [0, 1] for MNIST/CIFAR)
-            x_L = torch.zeros_like(images[0:1]).to(device)
-            x_U = torch.ones_like(images[0:1]).to(device)
+            x_L = torch.zeros((1, 1, 28, 28), device=device)
+            x_U = torch.ones((1, 1, 28, 28), device=device)
             if "cifar" in args.dataset.lower():
                 MEANS = torch.tensor([0.4914, 0.4822, 0.4465], device=device).view(1, 3, 1, 1)
                 STD = torch.tensor([0.225, 0.225, 0.225], device=device).view(1, 3, 1, 1)
-                x_L = (0.0 - MEANS) / STD
-                x_U = (1.0 - MEANS) / STD
+                x_L = ((0.0 - MEANS) / STD).expand(1, 3, 32, 32).contiguous()
+                x_U = ((1.0 - MEANS) / STD).expand(1, 3, 32, 32).contiguous()
 
             # --- Alpha-CROWN ---
             if solvers["alphacrown"]:
-                vra, t_v, _ = compute_alphacrown_vra_and_time(
+                vra, t_v, idx_alpha = compute_alphacrown_vra_and_time(
                     images, targets, model, eps_rescaled, clean_indices, 
                     batch_size=args.batch_size, norm=args.norm, x_U=x_U, x_L=x_L, return_robust_points=True
                 )
                 result_dict['lirpa_alphacrown'], result_dict['time_lirpa_alpha'] = vra, t_v
+                registry.register(eps, "alphacrown", idx_alpha) # Register indices
+                
                 if vra <= 0: solvers["alphacrown"] = False
             else:
                 result_dict['lirpa_alphacrown'] = 0.0
@@ -196,19 +219,19 @@ def main():
             # --- Beta/SDP CROWN ---
             if solvers["heavy_certified"]:
                 if str(args.norm) == 'inf':
-                    # Beta-CROWN logic
-                    v_acc, t_v, _ = compute_alphabeta_vra_and_time(
+                    v_acc, t_v, idx_beta = compute_alphabeta_vra_and_time(
                         args.dataset, args.model, args.model_path, eps, 
                         'cifar_l2_norm.yaml', clean_indices, total_samples=images.shape[0], return_robust_points=True
                     )
                     result_dict['lirpa_betacrown'], result_dict['time_lirpa_beta'] = v_acc, t_v
+                    registry.register(eps, "betacrown", idx_beta)
                 else:
-                    # SDP-CROWN logic
-                    v_acc, t_v, _ = compute_sdp_crown_vra(
-                        images, targets, model, eps_rescaled, clean_indices, 
-                        device, classes, args, batch_size=2, return_robust_points=True, x_U=x_U, x_L=x_L
+                    v_acc, t_v, idx_sdp = compute_sdp_crown_vra(
+                        images, targets, model, float(eps_rescaled), clean_indices, 
+                        device, classes, args, batch_size=1, return_robust_points=True, x_U=x_U, x_L=x_L
                     )
                     result_dict['sdp'], result_dict['time_sdp'] = v_acc, t_v
+                    registry.register(eps, "sdp", idx_sdp)
                 
                 if v_acc <= 0: solvers["heavy_certified"] = False
             else:
@@ -222,7 +245,10 @@ def main():
                 'lirpa_betacrown': 0.0, 'sdp': 0.0
             })
 
-        # Save current point
+        # Save registry state to disk after every epsilon step (prevents data loss)
+        registry.save()
+        
+        # Save current point to CSV
         add_result_and_sort(result_dict, args.output_csv, norm=args.norm)
 
     print("\nStudy Complete. Results saved to:", args.output_csv)
