@@ -938,7 +938,7 @@ def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indic
 # unsafe-pgd (total 81), index: [3, 4, 5, 6, 9, 10, 11, 12, 15, 16, 19, 23, 25, 26, 29, 35, 36, 43, 44, 45, 46, 50, 53, 56, 57, 61, 63, 65, 67, 72, 75, 76, 77, 78, 88, 90, 92, 94, 96, 97, 100, 102, 105, 106, 107, 113, 119, 120, 123, 124, 125, 127, 128, 129, 130, 132, 134, 138, 141, 143, 147, 149, 150, 151, 152, 155, 156, 162, 163, 165, 169, 170, 173, 176, 178, 184, 185, 191, 193, 196, 198]
 # safe (total 1), index: [58]
 import sys
-sys.path.insert(0,'/home/thomas.deltort/SDP-CROWN')
+sys.path.insert(0,'/home/aws_install/robustess_project/SDP-CROWN')
 import auto_LiRPA
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
@@ -1266,7 +1266,7 @@ import time
 import torch
 import numpy as np
 
-sys.path.append("/home/thomas.deltort/alpha-beta-CROWN/complete_verifier")
+sys.path.append("/home/aws_install/robustess_project/alpha-beta-CROWN/complete_verifier")
 from abcrown import ABCROWN # Import the main class from your script
 
 
@@ -1430,7 +1430,7 @@ def compute_alphabeta_vra_and_time(dataset_name, model_name, model_path, epsilon
     return true_vra, avg_time
 
 
-sys.path.append('/home/thomas.deltort/SDP-CROWN')
+sys.path.append('/home/aws_install/robustess_project/SDP-CROWN')
 from sdp_crown import verified_sdp_crown
 
 
