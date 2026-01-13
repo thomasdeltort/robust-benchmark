@@ -12,7 +12,7 @@ from auto_LiRPA.perturbations import PerturbationLpNorm
 from auto_LiRPA.patches import Patches
 
 # =============================================================================
-# STEP 1: Custom GroupSort Logic
+# 1. Standard PyTorch Operation (Autograd)
 # =============================================================================
 class GroupSortOp(torch.autograd.Function):
     @staticmethod
@@ -31,6 +31,11 @@ class GroupSortOp(torch.autograd.Function):
         inv_dims.insert(axis, inv_dims.pop(-1))
         return out.permute(inv_dims)
 
+    @staticmethod
+    def symbolic(g, x, axis):
+        # Crucial for auto_LiRPA to map this to our custom class
+        return g.op("GroupSortGeneral", x, axis_i=axis)
+
 class GroupSort_General(nn.Module):
     def __init__(self, axis=1):
         super().__init__()
@@ -38,9 +43,7 @@ class GroupSort_General(nn.Module):
     def forward(self, x):
         return GroupSortOp.apply(x, self.axis)
 
-# =============================================================================
-# STEP 2: Custom Bound Class (Unified Sandwich Logic)
-# =============================================================================
+
 class BoundGroupSort_General(BoundTwoPieceLinear):
     def __init__(self, attr, inputs, output_index, options):
         super().__init__(attr, inputs, output_index, options)
@@ -49,6 +52,7 @@ class BoundGroupSort_General(BoundTwoPieceLinear):
         self.init_d = None 
 
     def forward(self, x):
+        self.shape = x.shape[1:] 
         return GroupSortOp.forward(None, x, self.axis)
 
     def interval_propagate(self, *v):
@@ -59,89 +63,171 @@ class BoundGroupSort_General(BoundTwoPieceLinear):
             self.output_rho = self.inputs[0].output_rho
         return l, u
 
+    def get_unstable_idx(self):
+        x_l, x_u = self.inputs[0].lower, self.inputs[0].upper
+        l1, l2 = self._split_A(x_l)
+        u1, u2 = self._split_A(x_u)
+        v_l, v_u = l2 - u1, u2 - l1
+        self.alpha_indices = torch.logical_and(v_l < 0, v_u > 0).any(dim=0).nonzero(as_tuple=True)
+
+    def _relu_upper_bound(self, lb, ub):
+        """ Robust CROWN upper bound for internal ReLU (x2 - x1). """
+        # Numerical Stability: ensure ub > lb
+        lb_r = lb.clamp(max=0)
+        ub_r = ub.clamp(min=0)
+        diff = (ub_r - lb_r).clamp(min=1e-8) 
+        
+        d_up = ub_r / diff
+        b_up = -lb_r * d_up
+        return d_up, b_up
+
     def bound_backward(self, last_lA, last_uA, x=None, start_node=None, unstable_idx=None, **kwargs):
         A_obj = last_lA if last_lA is not None else last_uA
         if A_obj is None: return None, 0, 0
+        
+        # --- 1. Pre-activation Bounds for inner ReLU ---
+        x_L, x_U = self.inputs[0].lower, self.inputs[0].upper
+        l1, l2 = self._split_A(x_L)
+        u1, u2 = self._split_A(x_U)
+        
+        # Worst-case interval for v = x2 - x1
+        v_L = l2 - u1
+        v_U = u2 - l1
+        
+        # Calculate CROWN Upper Bound Line (Triangle Relaxation)
+        d_up, b_up = self._relu_upper_bound(v_L, v_U)
 
-        # 1. Determine Slope d
+        # --- 2. Slope Selection & Stability Enforcement ---
+        # A. Identify Stable Neurons
+        is_stable_pos = v_L >= 0 # ReLU is identity
+        is_stable_neg = v_U <= 0 # ReLU is zero
+        
+        # B. Retrieve/Initialize Optimized Lower Slopes (Alpha)
         if self.opt_stage in ['opt', 'reuse']:
             selected_alpha, _ = self.select_alpha_by_idx(last_lA, last_uA, unstable_idx, start_node)
-            d = selected_alpha[0]
+            d_low_l, d_low_u = selected_alpha[0], selected_alpha[1]
+            
+            if self.alpha_indices is not None:
+                full_shape = [d_low_l.shape[0], d_low_l.shape[1]] + list(self.shape)
+                full_shape[2] = full_shape[2] // 2 
+                d_low_l = self.reconstruct_full_alpha(d_low_l, full_shape, self.alpha_indices)
+                d_low_u = self.reconstruct_full_alpha(d_low_u, full_shape, self.alpha_indices)
         else:
-            # For C/2 pairs, d should be per-channel
-            num_pairs = self.inputs[0].lower.shape[self.axis] // 2
-            d = torch.full((num_pairs,), 0.5, device=A_obj.patches.device if isinstance(A_obj, Patches) else A_obj.device)
             if self.init_d is None:
-                # Shape requirement for Alpha-CROWN init: [1, 1, C/2, H, W]
-                h, w = self.inputs[0].lower.shape[-2:]
-                self.init_d = d.view(1, 1, num_pairs, 1, 1).expand(1, 1, num_pairs, h, w).detach()
+                s = list(x_L.shape)
+                d_shape = [1, s[0], s[self.axis] // 2] + s[2:]
+                self.init_d = torch.full(d_shape, 0.5, device=x_L.device)
+            d_low_l = d_low_u = self.init_d[0]
 
-        # 2. Split Sensitivities
-        A_y1, A_y2 = self._split_A(A_obj)
-        A_diff = A_y2 - A_y1
+        # C. OVERRIDE Slopes for Stable Neurons
+        # Stable Positive -> Slope 1
+        d_low_l = torch.where(is_stable_pos, torch.ones_like(d_low_l), d_low_l)
+        d_low_u = torch.where(is_stable_pos, torch.ones_like(d_low_u), d_low_u)
         
-        # 3. Apply Sandwich Relaxation
-        # Crucial broadcasting fix:
-        d_broadcast = self._align_slope(d, A_obj)
-        new_A_x1 = A_y2 - A_diff * d_broadcast
-        new_A_x2 = A_y1 + A_diff * d_broadcast
+        # Stable Negative -> Slope 0
+        d_low_l = torch.where(is_stable_neg, torch.zeros_like(d_low_l), d_low_l)
+        d_low_u = torch.where(is_stable_neg, torch.zeros_like(d_low_u), d_low_u)
 
-        final_A = self._merge_A(new_A_x1, new_A_x2, A_obj)
+        # --- 3. Center Transformation ---
+        original_xc = self.xc
+        x_center = (self.inputs[0].lower + self.inputs[0].upper) / 2.0
+        xc1, xc2 = self._split_A(x_center)
+        self.xc = xc2 - xc1 
 
-        # 4. SDP-CROWN Bias
-        total_bias = 0
-        if hasattr(self, 'input_rho') and self.input_rho is not None and self.opt_stage == 'opt':
-            selected_lam = self.select_lam_by_idx(last_lA, last_uA, unstable_idx, start_node)
-            total_bias = self.sdp_crown_bias(A_diff, A_diff * d_broadcast, selected_lam[0], start_node, A_diff.shape)
+        lbias = ubias = 0
+        final_lA = final_uA = None
+        opt_args = self.options.get('optimize_bound_args', {})
+        enable_sdp = opt_args.get('enable_SDP_crown', False)
 
-        return [(final_A, final_A)], total_bias, total_bias
+        # --- 4. Backward Propagation with Bias Correction ---
+        if last_lA is not None:
+            lA_y1, lA_y2 = self._split_A(last_lA)
+            lA_diff = lA_y2 - lA_y1
+            
+            # LB Logic: 
+            # If sensitivity > 0, we need ReLU Lower Bound -> d_low_l
+            # If sensitivity < 0, we need ReLU Upper Bound -> d_up
+            l_slope = torch.where(lA_diff >= 0, d_low_l, d_up)
+            l_bias_map = torch.where(lA_diff < 0, lA_diff * b_up, torch.zeros_like(b_up))
+            
+            lbias = l_bias_map.reshape(lA_diff.shape[0], lA_diff.shape[1], -1).sum(dim=-1)
 
+            if enable_sdp and self.opt_stage == 'opt' and hasattr(self, 'input_rho'):
+                selected_lam = self.select_lam_by_idx(last_lA, last_uA, unstable_idx, start_node)
+                lbias += self.sdp_crown_bias(lA_diff, lA_diff * l_slope, selected_lam[0], 
+                                             start_node, [lA_diff.shape[0], lA_diff.shape[1]], sign=-1)
+            
+            final_lA = self._merge_A(lA_y2 - lA_diff * l_slope, lA_y1 + lA_diff * l_slope, last_lA)
+
+        if last_uA is not None:
+            uA_y1, uA_y2 = self._split_A(last_uA)
+            uA_diff = uA_y2 - uA_y1
+            
+            # UB Logic (Signs flip):
+            # If sensitivity > 0, we need ReLU Upper Bound -> d_up
+            # If sensitivity < 0, we need ReLU Lower Bound -> d_low_u
+            u_slope = torch.where(uA_diff >= 0, d_up, d_low_u)
+            u_bias_map = torch.where(uA_diff >= 0, uA_diff * b_up, torch.zeros_like(b_up))
+            
+            ubias = u_bias_map.reshape(uA_diff.shape[0], uA_diff.shape[1], -1).sum(dim=-1)
+
+            if enable_sdp and self.opt_stage == 'opt' and hasattr(self, 'input_rho'):
+                selected_lam = self.select_lam_by_idx(last_lA, last_uA, unstable_idx, start_node)
+                ubias += self.sdp_crown_bias(uA_diff, uA_diff * u_slope, selected_lam[1], 
+                                             start_node, [uA_diff.shape[0], uA_diff.shape[1]], sign=+1)
+            
+            final_uA = self._merge_A(uA_y2 - uA_diff * u_slope, uA_y1 + uA_diff * u_slope, last_uA)
+
+        self.xc = original_xc
+        return [(final_lA, final_uA)], lbias, ubias
+
+    # --- Shape Helpers ---
     def _split_A(self, A):
         if isinstance(A, Patches):
-            p = A.patches # [out_c, batch, out_h, out_w, in_c, k_h, k_w]
-            s = p.shape
-            p_reshaped = p.view(s[0], s[1], s[2], s[3], s[4] // 2, 2, s[5], s[6])
-            return p_reshaped[..., 0, :, :], p_reshaped[..., 1, :, :]
-        else:
-            # [spec, batch, C, H, W] or [spec, batch, C]
-            dims = list(range(A.dim()))
-            dims.append(dims.pop(2)) # Move C to end
-            A_p = A.permute(dims)
-            A_r = A_p.reshape(*A_p.shape[:-1], -1, 2)
-            return A_r[..., 0], A_r[..., 1]
+            p = A.patches 
+            s = list(p.shape)
+            p_r = p.view(s[0], s[1], s[2], s[3], s[4] // 2, 2, s[5], s[6])
+            return p_r[..., 0, :, :], p_r[..., 1, :, :]
+        s = list(A.shape)
+        if len(s) == 5: 
+            A_r = A.view(s[0], s[1], s[2] // 2, 2, s[3], s[4])
+            return A_r[:, :, :, 0], A_r[:, :, :, 1]
+        if len(s) == 4: 
+            A_r = A.view(s[0], s[1] // 2, 2, s[2], s[3])
+            return A_r[:, :, 0], A_r[:, :, 1]
+        return A
 
     def _align_slope(self, d, A_obj):
         if isinstance(A_obj, Patches):
-            # Patches shape is 7D. Slope must align with in_c (index 4)
-            # d is [num_pairs] or [spec, batch, num_pairs, H, W]
-            if d.dim() > 1:
-                # If d is optimized, take mean over spatial to allow broadcasting in patches
-                d = d.mean(dim=(-1, -2))
-            return d.view(1, 1, 1, 1, -1, 1, 1)
-        else:
-            # Tensor case
-            if d.dim() == 1:
-                return d.view(1, 1, -1, 1, 1)
-            return d
+            if d.dim() == 5: d = d.mean(dim=(-1, -2))
+            return d.view(d.size(0), d.size(1), 1, 1, -1, 1, 1)
+        return d 
 
     def _merge_A(self, A1, A2, orig):
         if isinstance(orig, Patches):
-            # Stack along the new 'pair' dimension then flatten back to in_c
-            new_p = torch.stack([A1, A2], dim=-3).view(orig.patches.shape)
-            return Patches(new_p, orig.stride, orig.padding, orig.shape, orig.identity, orig.unstable_idx, orig.output_shape)
-        else:
-            merged = torch.stack([A1, A2], dim=-1).flatten(start_dim=-2)
-            inv_dims = list(range(merged.dim()))
-            inv_dims.insert(2, inv_dims.pop(-1))
-            return merged.permute(inv_dims)
-
+            new_p = torch.stack([A1, A2], dim=5).view(orig.patches.shape)
+            return Patches(new_p, orig.stride, orig.padding, orig.shape, 
+                           orig.identity, orig.unstable_idx, orig.output_shape)
+        res = torch.stack([A1, A2], dim=3 if orig.dim()==5 else 2)
+        return res.view(orig.shape)
+    def clip_alpha(self):
+        for v in self.alpha.values():
+            v.data = torch.clamp(v.data, 0., 1.)
+    
+    def clip_lam(self):
+        with torch.no_grad():
+            for v in self.lam.values():
+                v.clamp_(min=1e-6)
+# Register the logic
 register_custom_op("onnx::GroupSortGeneral", BoundGroupSort_General)
 
 # =============================================================================
 # MAIN TESTING SECTION
 # =============================================================================
 if __name__ == "__main__":
-    print("\n--- TEST 1: ARCHITECTURE ---")
+    print("\n" + "="*50)
+    print("TEST 1: ARCHITECTURE INITIALIZATION")
+    print("="*50)
     model = nn.Sequential(
         nn.Conv2d(3, 8, 3, padding=1),
         GroupSort_General(axis=1),
@@ -150,18 +236,49 @@ if __name__ == "__main__":
     )
     dummy_input = torch.randn(1, 3, 32, 32)
     lirpa_model = BoundedModule(model, dummy_input)
-    print("[✓] Model registered.")
+    
+    # Check if registered
+    found = any(isinstance(n, BoundGroupSort_General) for n in lirpa_model.nodes())
+    print(f"[✓] Custom node found: {found}")
 
-    print("\n--- TEST 2: CROWN PASS ---")
-    x = BoundedTensor(dummy_input, PerturbationLpNorm(norm=2, eps=0.1))
+    eps = 0.1
+    ptb = PerturbationLpNorm(norm=2, eps=eps)
+    x = BoundedTensor(dummy_input, ptb)
+    print(model(dummy_input))
+    print("\n" + "="*50)
+    print("TEST 2: ALPHA-CROWN PASS")
+    print("="*50)
+    lirpa_model.set_bound_opts({
+            'optimize_bound_args': {
+                'iteration': 200, 
+                'early_stop_patience': 30, 
+                'enable_opt_interm_bounds': True, 
+                'verbosity': False
+            }, 
+            'verbosity': False
+        })
     lb, ub = lirpa_model.compute_bounds(x=(x,), method='alpha-CROWN')
-    print(f"[✓] CROWN pass successful. LB: {lb[0][0].item():.4f}")
+    print(f"Neuron 0: LB = {lb[0][0].item():.4f}")
+    print(f"Neuron 0: UB = {ub[0][0].item():.4f}")
+    print(f"Neuron 1: LB = {lb[0][1].item():.4f}")
+    print(f"Neuron 1: UB = {ub[0][1].item():.4f}")
 
-    print("\n--- TEST 3: SDP-CROWN PASS ---")
+    print("\n" + "="*50)
+    print("TEST 3: SDP-CROWN PASS")
+    print("="*50)
+    # lirpa_model.set_bound_opts({'optimize_bound_args': {'iteration': 20, 'enable_SDP_crown': True}})
+    # Recommended settings for a tight final benchmark
     lirpa_model.set_bound_opts({'optimize_bound_args': {
-        'iteration': 5,
-        'enable_SDP_crown': True,
-        'sparse_intermediate_bounds': False,
-    }})
-    lb_opt, _ = lirpa_model.compute_bounds(x=(x,), method='CROWN-Optimized')
-    print(f"[✓] Optimized pass successful. LB: {lb_opt[0][0].item():.4f}")
+            'iteration': 300, 
+            'lr_alpha': 0.5, 
+            'early_stop_patience': 20, 
+            'fix_interm_bounds': False, 
+            'enable_opt_interm_bounds': True, 
+            'enable_SDP_crown': True, 
+            'lr_lambda': 0.05
+        }})
+    lb_opt, ub_opt = lirpa_model.compute_bounds(x=(x,), method='CROWN-Optimized')
+    print(f"Neuron 0: LB = {lb_opt[0][0].item():.4f}")
+    print(f"Neuron 0: UB = {ub_opt[0][0].item():.4f}")
+    print(f"Neuron 1: LB = {lb_opt[0][1].item():.4f}")
+    print(f"Neuron 1: UB = {ub_opt[0][1].item():.4f}")

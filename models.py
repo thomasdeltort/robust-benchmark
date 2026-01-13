@@ -9,230 +9,176 @@ import numpy as np
 # Note: This python file present every model we use for benchmarking. 
 # These models correspond to all the model architectures from Wang et al. (2021) & Leino et al. (2021)
 # This version uses ReLU as the activation function.
-# class GroupSort_General(nn.Module):
-#     """
-#     A universal, auto_lirpa-compatible PyTorch module that sorts pairs of features.
-
-#     This module can handle inputs of any shape (e.g., 2D, 4D). It works by 
-#     temporarily flattening the feature dimensions, applying the sort logic in a 
-#     verifier-friendly way (with ReLU on a 2D tensor), and then reshaping the 
-#     output back to the original input shape.
-
-#     The total number of features (product of dimensions after the batch dim) must be even.
-#     """
-#     def __init__(self, axis=1):
-#         super(GroupSort_General, self).__init__()
-#         self.axis = axis
-#         self.relu = nn.ReLU()
-
-#     def forward(self, x: torch.Tensor) -> torch.Tensor:
-#         dim = self.axis if self.axis >= 0 else x.dim() + self.axis
-#         if x.shape[dim] % 2 != 0: raise ValueError(f"Size of axis {dim} must be divisible by 2.")
-#         new_shape = (x.shape[:dim] + (x.shape[dim] // 2, 2) + x.shape[dim + 1 :])
-#         reshaped_x = x.view(new_shape)
-#         split_dim = dim + 1
-#         a = reshaped_x.select(split_dim, 0)
-#         b = reshaped_x.select(split_dim, 1)
-#         # ReLU Logic
-#         diff = b - a
-#         relu_diff = self.relu(diff)
-#         y_max = a + relu_diff
-#         y_min = b - relu_diff
-#         sorted_pairs = torch.stack((y_min, y_max), dim=split_dim)
-#         return sorted_pairs.reshape(x.shape)
-
-# class GroupSort_General(nn.Module):
-
-#     """
-
-#     A universal, auto_lirpa-compatible PyTorch module that sorts pairs of features.
-
-
-
-#     This module can handle inputs of any shape (e.g., 2D, 4D). It works by
-
-#     temporarily flattening the feature dimensions, applying the sort logic in a
-
-#     verifier-friendly way (with ReLU on a 2D tensor), and then reshaping the
-
-#     output back to the original input shape.
-
-
-
-#     The total number of features (product of dimensions after the batch dim) must be even.
-
-#     """
-
-#     def __init__(self):
-
-#         super(GroupSort_General, self).__init__()
-
-#         self.relu = nn.ReLU()
-
-
-
-#     def forward(self, x: torch.Tensor) -> torch.Tensor:
-
-#         original_shape = x.shape
-
-#         batch_size = original_shape[0]
-
-       
-
-#         num_features = np.prod(original_shape[1:])
-
-       
-
-#         if num_features % 2 != 0:
-
-#             raise ValueError(
-
-#                 f"The total number of features must be even, but got {num_features} "
-
-#                 f"for shape {original_shape}."
-
-#             )
-
-
-
-#         # Utiliser .reshape() pour gérer les tenseurs non-contigus
-
-#         x_flat = x.reshape(batch_size, -1)
-
-
-
-#         # --- Logique de tri ---
-
-       
-
-#         # .reshape() est aussi plus sûr ici, par précaution
-
-#         reshaped_x = x_flat.reshape(batch_size, -1, 2)
-
-       
-
-#         x1s = reshaped_x[..., 0]
-
-#         x2s = reshaped_x[..., 1]
-
-       
-
-#         diff = x2s - x1s
-
-#         relu_diff = self.relu(diff)
-
-       
-
-#         y1 = x2s - relu_diff
-
-#         y2 = x1s + relu_diff
-
-       
-
-#         sorted_pairs = torch.stack((y1, y2), dim=2)
-
-       
-
-#         # .reshape() est aussi plus sûr ici
-
-#         sorted_flat = sorted_pairs.reshape(batch_size, -1)
-
-
-
-#         # --- Fin de la logique ---
-
-
-
-#         # Restaurer la forme originale en utilisant .reshape()
-
-#         output = sorted_flat.reshape(original_shape)
-
-       
-
-#         return output
-    
-
-# class GroupSort_General(nn.Module):
-#     """
-#     Applies GroupSort specifically on the channel dimension.
-    
-#     It permutes the input from (N, C, ...) to (N, ..., C), applies the 
-#     sort logic so that pairs (c_2k, c_2k+1) are sorted, and then restores
-#     the original layout.
-#     """
-#     def __init__(self, axis=1):
-#         super(GroupSort_General, self).__init__()
-#         self.axis = axis
-#         self.relu = nn.ReLU()
-
-#     def forward(self, x: torch.Tensor) -> torch.Tensor:
-#         # 1. Permute to Channel Last
-#         # We assume the channel is at self.axis (usually 1).
-#         # We move that axis to the very end (-1).
-#         dims = list(range(x.dim()))
-#         # Remove the channel axis from its current spot and append to end
-#         channel_dim = dims.pop(self.axis) 
-#         dims.append(channel_dim)
+import torch
+import torch.nn as nn
+import sys
+
+# Update path to your local SDP-CROWN repository
+SDP_CROWN_PATH = '/home/aws_install/robustess_project/SDP-CROWN'
+sys.path.insert(0, SDP_CROWN_PATH)
+
+from auto_LiRPA import BoundedModule, BoundedTensor, register_custom_op
+from auto_LiRPA.operators import BoundTwoPieceLinear
+from auto_LiRPA.perturbations import PerturbationLpNorm
+from auto_LiRPA.patches import Patches
+
+# =============================================================================
+# STEP 1: Custom GroupSort Logic (Standard Autograd)
+# =============================================================================
+class GroupSortOp(torch.autograd.Function):
+    """
+    Standard PyTorch implementation of GroupSort-2.
+    GroupSort-2 sorts pairs of elements (x1, x2) into (min, max).
+    It is 1-Lipschitz under the L2 norm.
+    """
+    @staticmethod
+    def forward(ctx, x, axis):
+        # 1. Permute to bring the channel/sort axis to the end
+        dims = list(range(x.dim()))
+        channel_dim = dims.pop(axis)
+        dims.append(channel_dim)
+        x_p = x.permute(dims).contiguous()
+        s = x_p.shape
         
-#         # permute returns a view, but we usually need contiguous memory for reshaping
-#         x_permuted = x.permute(dims).contiguous()
+        # 2. Reshape into pairs (..., 2)
+        x_flat = x_p.view(s[0], -1, 2)
+        x1, x2 = x_flat[..., 0], x_flat[..., 1]
         
-#         # Capture the shape after permutation: (N, D1, D2, ..., C)
-#         permuted_shape = x_permuted.shape
-#         batch_size = permuted_shape[0]
-#         num_channels = permuted_shape[-1]
+        # 3. Sorting logic: 
+        # min(x1, x2) = x2 - relu(x2 - x1)
+        # max(x1, x2) = x1 + relu(x2 - x1)
+        diff = torch.relu(x2 - x1)
+        y1, y2 = x2 - diff, x1 + diff
         
-#         if num_channels % 2 != 0:
-#              raise ValueError(
-#                 f"The number of channels must be even, but got {num_channels} "
-#                 f"for input shape {x.shape}."
-#             )
+        # 4. Restore original shape and dimension order
+        out = torch.stack((y1, y2), dim=-1).view(s)
+        inv_dims = list(range(x.dim()))
+        inv_dims.insert(axis, inv_dims.pop(-1))
+        return out.permute(inv_dims)
 
-#         # 2. Flatten for the sorting logic
-#         # We flatten everything except batch. Since Channel is now last,
-#         # adjacent elements in this flattened view correspond to adjacent channels.
-#         x_flat = x_permuted.reshape(batch_size, -1)
+class BoundGroupSort_AutoLirpa(nn.Module):
+    def __init__(self, axis=1):
+        super().__init__()
+        self.axis = axis
+    def forward(self, x):
+        return GroupSortOp.apply(x, self.axis)
 
-#         # --- Sort Logic (Verifiable / Auto_Lirpa compatible) ---
-        
-#         # Group into pairs. 
-#         # Because we are Channel Last, the last dim is C.
-#         # This reshaping groups (c0, c1), (c2, c3), etc.
-#         reshaped_x = x_flat.reshape(batch_size, -1, 2)
-        
-#         x1s = reshaped_x[..., 0]
-#         x2s = reshaped_x[..., 1]
-        
-#         # Calculate diff and apply ReLU to determine min/max without conditional branching
-#         # min(a,b) = x2 - ReLU(x2 - x1)
-#         # max(a,b) = x1 + ReLU(x2 - x1)
-#         diff = x2s - x1s
-#         relu_diff = self.relu(diff)
-        
-#         y1 = x2s - relu_diff # The smaller value
-#         y2 = x1s + relu_diff # The larger value
-        
-#         sorted_pairs = torch.stack((y1, y2), dim=2)
-#         sorted_flat = sorted_pairs.reshape(batch_size, -1)
-        
-#         # --- End Logic ---
+# =============================================================================
+# STEP 2: Custom Bound Class (auto_LiRPA Verification Logic)
+# =============================================================================
+class BoundGroupSort_AutoLirpa(BoundTwoPieceLinear):
+    """
+    Certified Bound implementation for GroupSort.
+    This class defines how CROWN and SDP-CROWN handle the layer.
+    """
+    def __init__(self, attr, inputs, output_index, options):
+        super().__init__(attr, inputs, output_index, options)
+        self.axis = attr.get('axis', 1)
+        self.alpha_size = 2 # Stores optimized slopes for the internal ReLUs
+        self.init_d = None 
 
-#         # 3. Restore Shape
+    def forward(self, x):
+        return GroupSortOp.forward(None, x, self.axis)
+
+    def interval_propagate(self, *v):
+        """
+        Interval Bound Propagation (IBP): Computes lower/upper bounds (L, U).
+        Crucially, we pass the 'output_rho' (L2 radius) forward to maintain 1-Lipschitz tracking.
+        """
+        h_L, h_U = v[0]
+        l = GroupSortOp.forward(None, h_L, self.axis)
+        u = GroupSortOp.forward(None, h_U, self.axis)
         
-#         # First reshape back to the permuted shape (N, ..., C)
-#         output_permuted = sorted_flat.reshape(permuted_shape)
+        # L2-Radius propagation: rho_out = rho_in (since GroupSort is 1-Lipschitz)
+        if hasattr(self.inputs[0], 'output_rho'):
+            self.output_rho = self.inputs[0].output_rho
+        return l, u
+
+    def bound_backward(self, last_lA, last_uA, x=None, start_node=None, unstable_idx=None, **kwargs):
+        """
+        Linear Relaxation: Computes certified bounds by propagating linear coefficients (A matrices).
+        This handles the 'Sandwich' logic: Input -> (Subtraction) -> (ReLU) -> (Addition) -> Output.
+        """
+        A_obj = last_lA if last_lA is not None else last_uA
+        if A_obj is None: return None, 0, 0
+
+        # --- A. Determine Slope 'd' for ReLU relaxation ---
+        # d is the coefficient of the ReLU(x2-x1) relaxation line.
+        if self.opt_stage in ['opt', 'reuse']:
+            # Use Alpha-CROWN optimized slopes
+            selected_alpha, _ = self.select_alpha_by_idx(last_lA, last_uA, unstable_idx, start_node)
+            d = selected_alpha[0]
+        else:
+            # Default CROWN: Use a heuristic slope (0.5)
+            num_pairs = self.inputs[0].lower.shape[self.axis] // 2
+            d = torch.full((num_pairs,), 0.5, device=A_obj.patches.device if isinstance(A_obj, Patches) else A_obj.device)
+            if self.init_d is None:
+                h, w = self.inputs[0].lower.shape[-2:]
+                self.init_d = d.view(1, 1, num_pairs, 1, 1).expand(1, 1, num_pairs, h, w).detach()
+
+        # --- B. Split Sensitivities ---
+        # Split output coefficients A into A_y1 (coefficient for min) and A_y2 (for max)
+        A_y1, A_y2 = self._split_A(A_obj)
+        A_diff = A_y2 - A_y1
         
-#         # Finally, permute back to Channel First (N, C, ...)
-#         # We need to calculate the inverse permutation indices
-#         inv_dims = list(range(x.dim()))
-#         # Move the last dim (which is now channels) back to self.axis
-#         last_dim = inv_dims.pop(-1)
-#         inv_dims.insert(self.axis, last_dim)
-        
-#         output = output_permuted.permute(inv_dims)
-        
-#         return output
-    
+        # --- C. Apply Linear Relaxation ---
+        # We propagate the A matrices back to x1 and x2 using the chain rule on:
+        # y1 = x2 - d*(x2-x1) -> A_x1_contribution = A_y1 * d
+        # y2 = x1 + d*(x2-x1) -> A_x2_contribution = A_y2 * d
+        d_broadcast = self._align_slope(d, A_obj)
+        new_A_x1 = A_y2 - A_diff * d_broadcast
+        new_A_x2 = A_y1 + A_diff * d_broadcast
+
+        # Merge back to original tensor shape
+        final_A = self._merge_A(new_A_x1, new_A_x2, A_obj)
+
+        # --- D. SDP-CROWN Penalty (L2 coupling) ---
+        # SDP-CROWN adds a 'total_bias' term to tighten L2 bounds.
+        # It couples the perturbations of x1 and x2 using a Lagrangian multiplier (lambda).
+        total_bias = 0
+        if hasattr(self, 'input_rho') and self.input_rho is not None and self.opt_stage == 'opt':
+            selected_lam = self.select_lam_by_idx(last_lA, last_uA, unstable_idx, start_node)
+            # theorem 4.1 from SDP-CROWN: adds quadratic penalty to bias
+            total_bias = self.sdp_crown_bias(A_diff, A_diff * d_broadcast, selected_lam[0], start_node, A_diff.shape)
+
+        return [(final_A, final_A)], total_bias, total_bias
+
+    def _split_A(self, A):
+        """ Handles splitting coefficients for Patches (CNNs) and standard Tensors. """
+        if isinstance(A, Patches):
+            p = A.patches # [out_c, batch, out_h, out_w, in_c, k_h, k_w]
+            s = p.shape
+            p_reshaped = p.view(s[0], s[1], s[2], s[3], s[4] // 2, 2, s[5], s[6])
+            return p_reshaped[..., 0, :, :], p_reshaped[..., 1, :, :]
+        else:
+            dims = list(range(A.dim()))
+            dims.append(dims.pop(2)) # Move channel dim to end to split easily
+            A_p = A.permute(dims)
+            A_r = A_p.reshape(*A_p.shape[:-1], -1, 2)
+            return A_r[..., 0], A_r[..., 1]
+
+    def _align_slope(self, d, A_obj):
+        """ Fixes broadcasting so slope 'd' matches the A matrix shape. """
+        if isinstance(A_obj, Patches):
+            if d.dim() > 1: d = d.mean(dim=(-1, -2))
+            return d.view(1, 1, 1, 1, -1, 1, 1)
+        else:
+            if d.dim() == 1: return d.view(1, 1, -1, 1, 1)
+            return d
+
+    def _merge_A(self, A1, A2, orig):
+        """ Recombines split coefficients into a single A tensor/Patch object. """
+        if isinstance(orig, Patches):
+            new_p = torch.stack([A1, A2], dim=-3).view(orig.patches.shape)
+            return Patches(new_p, orig.stride, orig.padding, orig.shape, orig.identity, orig.unstable_idx, orig.output_shape)
+        else:
+            merged = torch.stack([A1, A2], dim=-1).flatten(start_dim=-2)
+            inv_dims = list(range(merged.dim()))
+            inv_dims.insert(2, inv_dims.pop(-1)) # Restore channel dim to index 2
+            return merged.permute(inv_dims)
+
+# Register the logic: tells auto_LiRPA to use our Bound class for the GroupSort node
+register_custom_op("onnx::GroupSortGeneral", BoundGroupSort_AutoLirpa)
 
 class GroupSort_General(nn.Module):
     """

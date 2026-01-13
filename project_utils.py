@@ -317,6 +317,25 @@ def load_model(args, model_zoo, device):
     model.eval() # Set model to evaluation mode
     return model
 
+from models import GroupSort_AutoLirpa
+
+def swap_to_reformulated_gs2(model):
+    """
+    Recursively replaces decomposed GroupSort_General modules with 
+    the custom operator version (GroupSort_AutoLirpa).
+    """
+    for name, module in model.named_children():
+        # Check if the module is the standard/decomposed GroupSort
+        if isinstance(module, GroupSort_General):
+            # Create the reformulated module, preserving the axis
+            new_module = GroupSort_AutoLirpa(axis=module.axis)
+            setattr(model, name, new_module)
+            print(f"  [✓] Swapped {name} to reformulated GroupSort")
+        else:
+            # Recurse into sub-modules (Sequential, etc.)
+            swap_to_reformulated_gs2(module)
+    return model
+
 def convert_lipschitz_constant(L_2, norm, input_dim):
     """
     Converts an L2 Lipschitz constant to another norm's constant.
