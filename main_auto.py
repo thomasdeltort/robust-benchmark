@@ -139,7 +139,7 @@ def main():
         model_name=args.model,
         norm=str(args.norm),
         total_dataset_size=images.shape[0],
-        save_dir="./results/robust_points"
+        save_dir="./results2/robust_points"
     )
     # Register "clean" points as a baseline (epsilon 0 equivalent)
     registry.register(0.0, "clean", clean_indices)
@@ -154,7 +154,7 @@ def main():
     solvers = {
         "aa": True, 
         "cra": True, 
-        "alphacrown": True, 
+        "alphacrown": False, 
         "heavy_certified": True 
     }
 
@@ -226,8 +226,10 @@ def main():
                     result_dict['lirpa_betacrown'], result_dict['time_lirpa_beta'] = v_acc, t_v
                     registry.register(eps, "betacrown", idx_beta)
                 else:
+                    swapped_model = replace_groupsort(model, images[:1]).to(device)
+                    # print("check : ", model(images[:1]), swapped_model(images[:1]))
                     v_acc, t_v, idx_sdp = compute_sdp_crown_vra(
-                        images, targets, model, float(eps_rescaled), clean_indices, 
+                        images, targets, swapped_model, float(eps_rescaled), clean_indices, 
                         device, classes, args, batch_size=1, return_robust_points=True, x_U=x_U, x_L=x_L
                     )
                     result_dict['sdp'], result_dict['time_sdp'] = v_acc, t_v

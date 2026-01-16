@@ -1,15 +1,9 @@
 #!/bin/bash
 
-# ==============================================================================
-# MNIST Robustness Experiment Runner (High Granularity)
-# ==============================================================================
-# This script runs evaluation experiments on the specified vanilla model 
-# checkpoints using very dense L2 and Linf perturbation steps.
-# ==============================================================================
+# 1. Define the base path
+MODEL_BASE_PATH="/home/aws_install/robustess_project/Robust_Benchmark/models"
 
-# 1. Define the Specific Vanilla Models (Checkpoints)
-# ------------------------------------------------------------------------------
-# Only MNIST models are included here to match the --dataset mnist flag.
+# 2. Define the list of models
 MODELS=(
     # --- MLP Models ---
     "vanilla_MLP_MNIST_1_LIP_Bjork_mnist_tau_a250.0_T0.08_bs64_lr0.001_eps0.01_medium_1765204755_acc0.80.pth"
@@ -28,88 +22,44 @@ MODELS=(
     "vanilla_ConvSmall_MNIST_1_LIP_mnist_tau_a250.0_T100.0_bs64_lr0.001_eps0.5_medium_1765211561_acc0.99.pth"
 )
 
-# Directory where models are stored.
-MODEL_DIR="./models"
+echo "Starting batch processing..."
+echo "---------------------------------------------------"
 
-# 2. Define High-Granularity Epsilon Ranges
-# ------------------------------------------------------------------------------
-# We use `seq` to generate dense lists of floats.
-# Format: seq START STEP END
-
-# L_inf: 0.01 to 0.40 with step 0.002
-# Example: 0.010, 0.012, 0.014 ... 0.400 (~196 values)
-EPSILONS_LINF=($(seq -f "%.3f" 0.005  0.004 0.30))
-# 0.005
-# L_2: 0.05 to 2.00 with step 0.01
-# Example: 0.05, 0.06, 0.07 ... 2.00 (~196 values)
-EPSILONS_L2=($(seq -f "%.2f" 0.05  0.02 2.2))
-# 0.005
-# 3. Experiment Loop
-# ------------------------------------------------------------------------------
-
-echo "Starting High-Granularity Experiments..."
-echo "Total models: ${#MODELS[@]}"
-echo "L_inf density: ${#EPSILONS_LINF[@]} epsilons per model"
-echo "L_2 density:   ${#EPSILONS_L2[@]} epsilons per model"
-echo "----------------------------------------------------------------"
-
-# Variable pour identifier le premier modèle
-is_first_model=true
-
+# 3. Loop through the array
 for model_file in "${MODELS[@]}"; do
-    # 1. Clean filename
-    model_name_clean=$(basename "$model_file" .pth)
 
-    # 2. Extract Architecture
-    temp_name="${model_file#vanilla_}"
-    model_func_name="${temp_name%%_mnist*}"
-    
-    echo "Processing Checkpoint: $model_file"
-    echo " > Architecture: $model_func_name"
+    FULL_MODEL_PATH="${MODEL_BASE_PATH}/${model_file}"
 
-    # --- Run L_inf Experiments ---
-    if [ "$is_first_model" = true ]; then
-        echo "  > [SKIP] Linf robustness skipped for the first model."
-    else
-        echo "  > Starting L_inf perturbations..."
-        for eps in "${EPSILONS_LINF[@]}"; do
-            echo "    Model: $model_name_clean | Norm: Linf | Epsilon: $eps"
-            
-            python main.py \
-                --model "$model_func_name" \
-                --dataset mnist \
-                --model_path "${MODEL_DIR}/${model_file}" \
-                --norm "inf" \
-                --epsilon "$eps" \
-                --output_csv "./results/${model_name_clean}_linf_.csv" > /dev/null 2>&1
-                
-            if [ $? -ne 0 ]; then
-                echo "    [ERROR] Experiment failed for $model_name_clean (Linf, eps=$eps)"
-            fi
-        done
+    # Check if file exists
+    if [ ! -f "$FULL_MODEL_PATH" ]; then
+        echo "❌ Error: File not found: $model_file"
+        continue
     fi
 
-    # --- Run L_2 Experiments ---
-    echo "  > Starting L_2 perturbations..."
-    for eps in "${EPSILONS_L2[@]}"; do
-        echo "    Model: $model_name_clean | Norm: L2   | Epsilon: $eps"
+    # Parse logic
+    temp_name="${model_file#vanilla_}"
+    arch_name="${temp_name%%_mnist*}"
+    csv_name="new_experiment_${model_file%.pth}.csv"
+
+    # Print a "working" message so you know it hasn't frozen
+    echo -n "Processing $arch_name ... "
+
+    # Run the command silently
+    # > /dev/null 2>&1 hides both standard output and errors
+    if python main_auto.py \
+        --model_path "$FULL_MODEL_PATH" \
+        --model "$arch_name" \
+        --dataset 'mnist' \
+        --output_csv "$csv_name" > /dev/null 2>&1; then
         
-        python main.py \
-            --model "$model_func_name" \
-            --dataset mnist \
-            --model_path "${MODEL_DIR}/${model_file}" \
-            --epsilon "$eps" \
-            --output_csv "./results/${model_name_clean}_l2_.csv" > /dev/null 2>&1
+        # This prints only if python exit code was 0 (Success)
+        echo "✅ Done. (Saved to $csv_name)"
+    else
+        # This prints if python crashed
+        echo "❌ Failed."
+    fi
 
-        if [ $? -ne 0 ]; then
-            echo "    [ERROR] Experiment failed for $model_name_clean (L2, eps=$eps)"
-        fi
-    done
-
-    # Une fois le premier modèle traité, on passe le flag à false
-    is_first_model=false
-
-    echo "----------------------------------------------------------------"
 done
 
-echo "All experiments completed."
+echo "---------------------------------------------------"
+echo "All experiments finished."

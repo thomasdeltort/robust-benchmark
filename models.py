@@ -665,7 +665,6 @@ def ConvSmall_MNIST_1_LIP_GNP():
     Structure: Conv(1, 16, 4, 2, 1) -> ReLU -> Conv(16, 32, 4, 2, 1) -> ReLU -> Linear(1568, 100) -> ReLU -> Linear(100, 10)
     """
     model = torchlip.Sequential(
-        #FIXME Convert to zero padding
         AdaptiveOrthoConv2d(in_channels=1, out_channels=16, kernel_size=4, stride=2, padding=1, padding_mode='zeros',ortho_params=DEFAULT_ORTHO_PARAMS),
         GroupSort_General(),
         AdaptiveOrthoConv2d(in_channels=16, out_channels=32, kernel_size=4, stride=2, padding=1, padding_mode='zeros',ortho_params=DEFAULT_ORTHO_PARAMS),
@@ -720,6 +719,93 @@ def CNNA_CIFAR10_1_LIP_GNP():
         torchlip.SpectralLinear(100, 10)
     )
     return model
+
+
+
+class GroupSort(nn.Module):
+    """
+    1-Lipschitz GroupSort operator (Universal).
+    
+    - Implemented via Sparse Convolutions (1x1).
+    - Agnostic to input shape: works automatically for (B, C), (B, C, H, W), etc.
+    - Verified Auto_LiRPA sound.
+    """
+    def __init__(self, channels, axis=1):
+        super().__init__()
+        self.axis = axis
+        self.channels = channels
+        
+        # We use Conv2d(1x1) as the universal computing engine
+        self.diff = nn.Conv2d(channels, channels // 2, kernel_size=1, bias=False)
+        self.expand = nn.Conv2d(channels // 2, channels, kernel_size=1, bias=False)
+        
+        # Freeze and initialize weights
+        self.diff.weight.requires_grad = False
+        self.expand.weight.requires_grad = False
+        self._init_weights()
+
+    def _init_weights(self):
+        with torch.no_grad():
+            self.diff.weight.fill_(0)
+            for k in range(self.channels // 2):
+                self.diff.weight[k, 2*k, 0, 0] = 1.0
+                self.diff.weight[k, 2*k + 1, 0, 0] = -1.0
+            
+            self.expand.weight.fill_(0)
+            for k in range(self.channels // 2):
+                self.expand.weight[2*k, k, 0, 0] = -1.0 
+                self.expand.weight[2*k + 1, k, 0, 0] = 1.0
+
+    def forward(self, x):
+        # 1. Standardize the sorting axis to index 1 (Channel dimension)
+        if self.axis != 1:
+            x_raw = x.transpose(1, self.axis)
+        else:
+            x_raw = x
+
+        # 2. Capture original shape to restore later
+        original_shape = x_raw.shape
+        
+        # 3. Agnostic Reshape: (Batch, Channel, ...) -> (Batch, Channel, 1, Flat)
+        #    This forces the tensor into a 4D shape compatible with Conv2d
+        #    regardless of whether the input was 2D, 3D, or 4D.
+        x_view = x_raw.reshape(original_shape[0], original_shape[1], 1, -1)
+
+        # 4. Apply Sorting Logic
+        #    Note: The 1x1 kernel treats the flattened dim independently
+        v = self.diff(x_view)
+        z = torch.relu(v)
+        correction = self.expand(z)
+        out_view = x_view + correction
+
+        # 5. Restore original shape
+        out = out_view.view(original_shape)
+        
+        # 6. Restore original axis
+        if self.axis != 1:
+            out = out.transpose(1, self.axis)
+            
+        return out
+
+# def CNNA_CIFAR10_1_LIP_GNP():
+#     """
+#     Model: CNN-A_1_LIP_GNP (CIFAR-10)
+#     Structure: Conv(3, 16, 4, 2, 1) -> ReLU -> Conv(16, 32, 4, 2, 1) -> ReLU -> Linear(2048, 100) -> ReLU -> Linear(100, 10)
+#     """
+#     model = torchlip.Sequential(
+#         AdaptiveOrthoConv2d(in_channels=3, out_channels=16, kernel_size=4, stride=2, padding=1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
+#         GroupSort(channels=16, axis=1),
+#         # nn.ReLU(),
+#         AdaptiveOrthoConv2d(in_channels=16, out_channels=32, kernel_size=4, stride=2, padding=1, padding_mode='zeros',ortho_params=DEFAULT_ORTHO_PARAMS),
+#         GroupSort(channels=32, axis=1),
+#         # nn.ReLU(),
+#         nn.Flatten(),
+#         torchlip.SpectralLinear(32 * 8 * 8, 100), # 2048 input features
+#         GroupSort(channels=100, axis=1),
+#         # nn.ReLU(),
+#         torchlip.SpectralLinear(100, 10)
+#     )
+#     return model
 
 def CNNA_CIFAR10_1_LIP_GNP_torchlip():
     """

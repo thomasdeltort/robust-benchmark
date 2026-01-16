@@ -317,24 +317,24 @@ def load_model(args, model_zoo, device):
     model.eval() # Set model to evaluation mode
     return model
 
-from models import GroupSort_AutoLirpa
+# from models import GroupSort_AutoLirpa
 
-def swap_to_reformulated_gs2(model):
-    """
-    Recursively replaces decomposed GroupSort_General modules with 
-    the custom operator version (GroupSort_AutoLirpa).
-    """
-    for name, module in model.named_children():
-        # Check if the module is the standard/decomposed GroupSort
-        if isinstance(module, GroupSort_General):
-            # Create the reformulated module, preserving the axis
-            new_module = GroupSort_AutoLirpa(axis=module.axis)
-            setattr(model, name, new_module)
-            print(f"  [✓] Swapped {name} to reformulated GroupSort")
-        else:
-            # Recurse into sub-modules (Sequential, etc.)
-            swap_to_reformulated_gs2(module)
-    return model
+# def swap_to_reformulated_gs2(model):
+#     """
+#     Recursively replaces decomposed GroupSort_General modules with 
+#     the custom operator version (GroupSort_AutoLirpa).
+#     """
+#     for name, module in model.named_children():
+#         # Check if the module is the standard/decomposed GroupSort
+#         if isinstance(module, GroupSort_General):
+#             # Create the reformulated module, preserving the axis
+#             new_module = GroupSort_AutoLirpa(axis=module.axis)
+#             setattr(model, name, new_module)
+#             print(f"  [✓] Swapped {name} to reformulated GroupSort")
+#         else:
+#             # Recurse into sub-modules (Sequential, etc.)
+#             swap_to_reformulated_gs2(module)
+#     return model
 
 def convert_lipschitz_constant(L_2, norm, input_dim):
     """
@@ -443,6 +443,52 @@ def add_result_and_sort(result_dict, base_csv_filepath, round_digits=3, norm='2'
     except Exception as e:
         print(f"❌ Error: Failed to write to CSV file '{csv_filepath}'. Error: {e}")
 
+def replace_groupsort(model, dummy_input):
+    """
+    Replaces GroupSort layers with GroupSort_SparseConv (or user defined GroupSort).
+    """
+    # Dictionary to store (layer_name -> input_channels)
+    layer_configs = {}
+    hooks = []
+
+    # 1. Define Hook to capture shapes
+    def get_shape_hook(name):
+        def hook(module, input, output):
+            shape = input[0].shape
+            channels = shape[1] 
+            layer_configs[name] = channels
+        return hook
+
+    # 2. Register hooks on all GroupSort layers
+    for name, module in model.named_modules():
+        if isinstance(module, GroupSort_General) or "GroupSort" in str(type(module)):
+            hooks.append(module.register_forward_hook(get_shape_hook(name)))
+
+    # 3. Run Dummy Pass
+    model.eval()
+    with torch.no_grad():
+        model(dummy_input)
+
+    # 4. Remove hooks
+    for h in hooks:
+        h.remove()
+
+    # 5. Perform Replacement
+    print(f"   [Auto-Infer] Detected GroupSort channels: {layer_configs}")
+    
+    for name, module in model.named_modules():
+        for child_name, _ in module.named_children():
+            full_child_name = f"{name}.{child_name}" if name else child_name
+            
+            if full_child_name in layer_configs:
+                channels = layer_configs[full_child_name]
+                axis = 1 
+                
+                print(f"   -> Replacing {full_child_name} (Channels={channels})")
+                new_layer = GroupSort(channels=channels, axis=axis)
+                setattr(module, child_name, new_layer)
+
+    return model
 
 import pandas as pd
 import matplotlib.pyplot as plt

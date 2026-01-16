@@ -234,8 +234,10 @@ def main():
             print(f"  - Certified Robustness (LIRPA β-CROWN): {lirpa_beta_vra:.2f}% | Time: {time_lirpa_beta:.4f}s")
             
         elif norm == '2':
+            swapped_model = replace_groupsort(model, images[:1])
+            # TODO Convert the model to have gs2 'sdp crown friendly'
             sdp_crown_vra, time_sdp, idx_sdp = compute_sdp_crown_vra(
-                images, targets, model, epsilon_rescaled, clean_indices, 
+                images, targets, swapped_model, epsilon_rescaled, clean_indices, 
                 device, classes, args, batch_size=1, 
                 return_robust_points=True, x_U=x_U, x_L=x_L
             )
