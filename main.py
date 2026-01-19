@@ -10,7 +10,7 @@ This version has been updated to also measure and record the execution time
 for each evaluation method, providing valuable performance metrics.
 
 It also now tracks exactly *which* points are robust for each method and saves
-binary vectors to a pickle file.
+binary vectors to a pickle file, including the UNION of all certified methods.
 """
 import torch
 import torch.nn as nn
@@ -161,6 +161,9 @@ def main():
     # --- 4. Run Robustness Evaluations with Timing ---
     print("\nStarting robustness evaluations...")
 
+    # --- Initialize Union Set for Best Certified ---
+    certified_indices_union = set()
+
     # --- PGD (Currently disabled/placeholder) ---
     pgd_era, time_pgd = 0, 0
 
@@ -185,6 +188,8 @@ def main():
             norm=norm, L=L, return_robust_points=True
         )
         registry.register(args.epsilon, "certificate", idx_cert)
+        # Add to Union
+        certified_indices_union.update(idx_cert.cpu().tolist())
         print(f"  - Certified Robustness (CRA): {certificates_cra:.2f}% | Time: {time_cra:.4f}s")
 
         # --- Bounds setup for Crown methods ---
@@ -212,6 +217,8 @@ def main():
             return_robust_points=True, x_U=x_U, x_L=x_L
         )
         registry.register(args.epsilon, "alphacrown", idx_alpha)
+        # Add to Union
+        certified_indices_union.update(idx_alpha.cpu().tolist())
         print(f"  - Certified Robustness (LIRPA α-CROWN): {lirpa_alpha_vra:.2f}% | Time: {time_lirpa_alpha:.4f}s")
 
         # --- Beta-CROWN / SDP-CROWN ---
@@ -231,6 +238,8 @@ def main():
                 norm=args.norm, return_robust_points=True
             )
             registry.register(args.epsilon, "betacrown", idx_beta)
+            # Add to Union
+            certified_indices_union.update(idx_beta.cpu().tolist())
             print(f"  - Certified Robustness (LIRPA β-CROWN): {lirpa_beta_vra:.2f}% | Time: {time_lirpa_beta:.4f}s")
             
         elif norm == '2':
@@ -242,6 +251,8 @@ def main():
                 return_robust_points=True, x_U=x_U, x_L=x_L
             )
             registry.register(args.epsilon, "sdp", idx_sdp)
+            # Add to Union
+            certified_indices_union.update(idx_sdp.cpu().tolist())
             print(f"  - Certified Robustness (SDP-CROWN): {sdp_crown_vra:.2f}% | Time: {time_sdp:.4f}s")
 
     else:
@@ -253,6 +264,18 @@ def main():
         sdp_crown_vra, time_sdp = 0, 0
         # No robust points to register for cert methods
 
+    # --- Calculate Best Certified (Union) ---
+    total_samples = images.shape[0]
+    best_certified_acc = (len(certified_indices_union) / total_samples) * 100.0
+    
+    # Convert Union Set to Tensor for Registry
+    if len(certified_indices_union) > 0:
+        union_tensor = torch.tensor(sorted(list(certified_indices_union)), dtype=torch.long)
+    else:
+        union_tensor = torch.tensor([], dtype=torch.long)
+        
+    registry.register(args.epsilon, "best_certified", union_tensor)
+    print(f"  > Best Certified (Union): {best_certified_acc:.2f}%")
 
     # --- 5. Store and Save Results ---
     # Save the registry to the pickle file
@@ -261,6 +284,7 @@ def main():
     # The results are collected in a dictionary. The keys will become the CSV header.
     result_dict = {
         'epsilon': args.epsilon,
+        'best_certified': best_certified_acc,
         'certificate': certificates_cra,
         'pgd': pgd_era,
         'aa': aa_era,
