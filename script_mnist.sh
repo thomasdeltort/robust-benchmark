@@ -50,7 +50,7 @@ for model_file in "${MODELS[@]}"; do
         --model "$arch_name" \
         --dataset 'mnist' \
         --output_csv "$csv_name" \
-        --batch_size 4   ; then 
+        --batch_size 4   > /dev/null 2>&1; then 
         # > /dev/null 2>&1
         echo "✅ Done. (Saved to $csv_name)"
     else

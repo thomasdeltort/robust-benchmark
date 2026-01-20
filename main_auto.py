@@ -126,200 +126,7 @@ def find_max_epsilon_binary_CRA(images, model, clean_indices, args, L, tol=0.005
     
     return final_eps
 
-# def main():
-#     parser = argparse.ArgumentParser(description='Intelligent Robustness Evaluation')
-#     parser.add_argument('--norm', default=2, choices=[2, 'inf'])
-#     parser.add_argument('--model_path', type=str, required=True)
-#     parser.add_argument('--model', type=str, required=True)
-#     parser.add_argument('--dataset', type=str, required=True, choices=['cifar10', 'mnist'])
-#     parser.add_argument('--batch_size', type=int, default=2)
-#     parser.add_argument('--output_csv', type=str, default='results/study.csv')
-#     parser.add_argument('--num_points', type=int, default=110, help='Points to sample in linear paving')
 
-#      # SDP Crown parameters
-#     parser.add_argument('--start', default=0, type=int, help='start index for the dataset')
-#     parser.add_argument('--end', default=200, type=int, help='end index for the dataset')
-#     parser.add_argument('--lr_alpha', default=0.5, type=float, help='alpha learning rate')
-#     parser.add_argument('--lr_lambda', default=0.05, type=float, help='lambda learning rate')
-#     args = parser.parse_args()
-
-#     # Setup
-#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#     images, targets, classes = load_dataset_benchmark_auto(args)
-#     model = load_model(args, model_zoo, device)
-#     model.eval()
-
-#     # Clean Accuracy Baseline
-#     with torch.no_grad():
-#         images, targets = images.to(device), targets.to(device)
-#         output = model(images)
-#         predictions = output.argmax(dim=1)
-#         clean_indices = (predictions == targets).nonzero(as_tuple=True)[0]
-#         clean_acc = (len(clean_indices) / len(targets)) * 100
-#         print(f"Clean Accuracy: {clean_acc:.2f}% ({len(clean_indices)} samples)")
-
-# # --- Initialize Robustness Registry ---
-#     registry = RobustnessRegistry(
-#         model_name=args.model,
-#         norm=str(args.norm),
-#         total_dataset_size=images.shape[0],
-#         save_dir="./results2/robust_points"
-#     )
-#     registry.register(0.0, "clean", clean_indices)
-
-#     # --- PRE-CALCULATE LIPSCHITZ CONSTANT ---
-#     L_2 = 1 
-#     L = convert_lipschitz_constant(L_2, str(args.norm), images[0].numel())
-#     print(f"Lipschitz Constant (Norm {args.norm}): {L:.4f}")
-
-#     # Phase 1: Find Baseline Boundary using CRA
-#     # We use this to set the resolution of our linspace. 
-#     cra_boundary = find_max_epsilon_binary_CRA(images, model, clean_indices, args, L)
-    
-#     # STRATEGY: Define paving max slightly higher than the CRA boundary.
-#     # This gives "Heavy Certified" methods a chance to prove robustness 
-#     # beyond the theoretical certificate if possible.
-#     if args.norm == 'inf':
-#         paving_max = cra_boundary * 2
-#     else:
-#         paving_max = cra_boundary * 1.1
-    
-#     # Phase 2: Systematic Paving (0 -> Max)
-#     # Note: We start from 0.0 (where acc is 100%)
-#     epsilon_range = np.linspace(0.0001, paving_max, args.num_points)
-    
-#     solvers = {
-#         "aa": True, 
-#         "cra": True, 
-#         "alphacrown": True, 
-#         "heavy_certified": True 
-#     }
-
-#     print(f"\n[Phase 2] Paving Range [0, {paving_max:.4f}]")
-#     print("         Stopping when Best Certified (Union) reaches 0%.")
-
-#     # CHANGE 1: Forward Loop (Low Eps -> High Eps)
-#     for eps in epsilon_range:
-#         print(f"\n--- EVALUATING EPSILON: {eps:.5f} ---")
-#         eps_rescaled = eps / 0.225 if "cifar" in args.dataset.lower() else eps
-#         result_dict = {'epsilon': eps}
-        
-#         certified_indices_union = set()
-
-#         # 1. EMPIRICAL FILTER (AutoAttack)
-#         if solvers["aa"]:
-#             # Note: Use the updated RELATIVE accuracy function here
-#             era, t_aa, idx_aa = compute_autoattack_era_and_time(
-#                 images, targets, model, eps, clean_indices, 
-#                 norm=str(args.norm), dataset_name=args.dataset, return_robust_points=True
-#             )
-#             result_dict['aa'], result_dict['time_aa'] = era, t_aa
-#             registry.register(eps, "autoattack", idx_aa)
-            
-#             # Optimization: If AA breaks completely, we usually stop AA, 
-#             # but we continue others until they also break.
-#             if era <= 0: solvers["aa"] = False
-#         else:
-#             result_dict['aa'], result_dict['time_aa'] = 0.0, 0.0
-
-#         # 2. CERTIFIED METHODS
-#         # We perform certification as long as AutoAttack hasn't fully broken the model
-#         # OR if we want to see the certifiers drop to 0 independently.
-#         # Since we want to stop only when Best Certified is 0, we run them if enabled.
-        
-#         # --- Lipschitz CRA ---
-#         if solvers["cra"]:
-#             # Note: Use the updated RELATIVE accuracy function here
-#             _, cra_val, t_cra, idx_cra = compute_certificates_CRA(
-#                 images, model, eps_rescaled, clean_indices, norm=str(args.norm), L=L, return_robust_points=True
-#             )
-#             result_dict['certificate'], result_dict['time_cra'] = cra_val, t_cra
-#             registry.register(eps, "certificate", idx_cra)
-#             certified_indices_union.update(idx_cra.cpu().tolist())
-
-#             if cra_val <= 0: solvers["cra"] = False
-#         else:
-#             result_dict['certificate'] = 0.0
-
-#         # --- Setup for Crown ---
-#         x_L = torch.zeros((1, 1, 28, 28), device=device)
-#         x_U = torch.ones((1, 1, 28, 28), device=device)
-#         if "cifar" in args.dataset.lower():
-#             MEANS = torch.tensor([0.4914, 0.4822, 0.4465], device=device).view(1, 3, 1, 1)
-#             STD = torch.tensor([0.225, 0.225, 0.225], device=device).view(1, 3, 1, 1)
-#             x_L = ((0.0 - MEANS) / STD).expand(1, 3, 32, 32).contiguous()
-#             x_U = ((1.0 - MEANS) / STD).expand(1, 3, 32, 32).contiguous()
-
-#         # --- Alpha-CROWN ---
-#         if solvers["alphacrown"]:
-#             vra, t_v, idx_alpha = compute_alphacrown_vra_and_time(
-#                 images, targets, model, eps_rescaled, clean_indices, 
-#                 batch_size=args.batch_size, norm=args.norm, x_U=x_U, x_L=x_L, return_robust_points=True
-#             )
-#             result_dict['lirpa_alphacrown'], result_dict['time_lirpa_alpha'] = vra, t_v
-#             registry.register(eps, "alphacrown", idx_alpha)
-#             certified_indices_union.update(idx_alpha.cpu().tolist())
-            
-#             print(f"    [Alpha-CROWN] Acc: {vra:.2f}%")
-
-#             if vra <= 0: solvers["alphacrown"] = False
-#         else:
-#             result_dict['lirpa_alphacrown'] = 0.0
-
-#         # --- Beta/SDP CROWN (Heavy) ---
-#         if solvers["heavy_certified"]:
-#             if str(args.norm) == 'inf':
-#                 v_acc, t_v, idx_beta = compute_alphabeta_vra_and_time(
-#                     args.dataset, args.model, args.model_path, eps, 
-#                     'cifar_l2_norm.yaml', clean_indices, total_samples=images.shape[0], return_robust_points=True
-#                 )
-#                 result_dict['lirpa_betacrown'], result_dict['time_lirpa_beta'] = v_acc, t_v
-#                 registry.register(eps, "betacrown", idx_beta)
-#                 certified_indices_union.update(idx_beta.cpu().tolist())
-#                 print(f"    [Beta-CROWN]  Acc: {v_acc:.2f}%")
-#             else:
-#                 swapped_model = replace_groupsort(model, images[:1]).to(device)
-#                 v_acc, t_v, idx_sdp = compute_sdp_crown_vra(
-#                     images, targets, swapped_model, float(eps_rescaled), clean_indices, 
-#                     device, classes, args, batch_size=1, return_robust_points=True, x_U=x_U, x_L=x_L
-#                 )
-#                 result_dict['sdp'], result_dict['time_sdp'] = v_acc, t_v
-#                 registry.register(eps, "sdp", idx_sdp)
-#                 certified_indices_union.update(idx_sdp.cpu().tolist())
-#                 print(f"    [SDP-CROWN]   Acc: {v_acc:.2f}%")
-            
-#             # Optimization: Only turn off if THIS solver hits 0
-#             if v_acc <= 0: solvers["heavy_certified"] = False
-#         else:
-#             result_dict['lirpa_betacrown'] = 0.0
-#             result_dict['sdp'] = 0.0
-
-#         # --- 3. CALCULATE BEST CERTIFIED (UNION) ---
-#         total_samples = images.shape[0]
-#         best_certified_acc = (len(certified_indices_union) / total_samples) * 100.0
-        
-#         result_dict['best_certified'] = best_certified_acc
-        
-#         if len(certified_indices_union) > 0:
-#             union_tensor = torch.tensor(sorted(list(certified_indices_union)), dtype=torch.long)
-#         else:
-#             union_tensor = torch.tensor([], dtype=torch.long)
-            
-#         registry.register(eps, "best_certified", union_tensor)
-#         print(f"  > Best Certified (Union): {best_certified_acc:.2f}%")
-
-#         registry.save()
-#         add_result_and_sort(result_dict, args.output_csv, norm=args.norm)
-
-#         # CHANGE 2: Dynamic Stop Condition
-#         # If the Union of all certificates is 0.0%, there is no point continuing
-#         # to higher epsilons.
-#         if best_certified_acc <= 0.0:
-#             print(f"  > Stopping Early: All certified methods reached 0% at epsilon {eps:.5f}.")
-#             break
-
-#     print("\nStudy Complete. Results saved to:", args.output_csv)
-#     create_robustness_plot_v3(f"{os.path.splitext(args.output_csv)[0]}_norm_{args.norm}.csv", f"{os.path.splitext(args.output_csv)[0]}_norm_{args.norm}.png")
 def main():
     parser = argparse.ArgumentParser(description='Intelligent Robustness Evaluation')
     parser.add_argument('--norm', default=2, choices=[2, 'inf'])
@@ -430,6 +237,7 @@ def main():
 
             if cra_val <= 0: solvers["cra"] = False
         else:
+            cra_val = 0.0
             result_dict['certificate'] = 0.0
             result_dict['time_cra'] = 0.0
 
@@ -447,6 +255,7 @@ def main():
 
             if cra_pi_val <= 0: solvers["cra_pi"] = False
         else:
+            cra_pi_val = 0.0
             result_dict['certificate_pi'] = 0.0
             result_dict['time_cra_pi'] = 0.0
 
@@ -486,6 +295,10 @@ def main():
                 registry.register(eps, "betacrown", idx_beta)
                 certified_indices_union.update(idx_beta.cpu().tolist())
                 print(f"    [Beta-CROWN]  Acc: {v_acc:.2f}%")
+                
+                # IMPORTANT: Set the OTHER method to 0.0 so keys stay consistent
+                result_dict['sdp'] = 0.0
+                result_dict['time_sdp'] = 0.0
             else:
                 swapped_model = replace_groupsort(model, images[:1]).to(device)
                 v_acc, t_v, idx_sdp = compute_sdp_crown_vra(
@@ -496,9 +309,14 @@ def main():
                 registry.register(eps, "sdp", idx_sdp)
                 certified_indices_union.update(idx_sdp.cpu().tolist())
                 print(f"    [SDP-CROWN]   Acc: {v_acc:.2f}%")
+
+                # IMPORTANT: Set the OTHER method to 0.0 so keys stay consistent
+                result_dict['lirpa_betacrown'] = 0.0
+                result_dict['time_lirpa_beta'] = 0.0
             
             if v_acc <= 0: solvers["heavy_certified"] = False
         else:
+            # When disabled, set BOTH to 0.0 (This part was already correct in your code)
             result_dict['lirpa_betacrown'] = 0.0
             result_dict['time_lirpa_beta'] = 0.0
             result_dict['sdp'] = 0.0
