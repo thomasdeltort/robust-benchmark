@@ -5,7 +5,7 @@ MODEL_BASE_PATH="/home/aws_install/robustess_project/Robust_Benchmark/models"
 
 # 2. Define the list of models
 MODELS=(
-    --- MLP Models ---
+    # --- MLP Models ---
     "vanilla_MLP_MNIST_1_LIP_Bjork_mnist_tau_a250.0_T0.08_bs64_lr0.001_eps0.01_medium_1765204755_acc0.80.pth"
     "vanilla_MLP_MNIST_1_LIP_Bjork_mnist_tau_a250.0_T100.0_bs64_lr0.001_eps0.01_medium_1765205348_acc0.98.pth"
     "vanilla_MLP_MNIST_1_LIP_GNP_mnist_tau_a250.0_T0.09_bs64_lr0.001_eps0.01_medium_1765202951_acc0.82.pth"
@@ -25,7 +25,7 @@ MODELS=(
 echo "Starting batch processing l2..."
 echo "---------------------------------------------------"
 
-# 3. Loop through the array
+# 3. Loop through the array (L2)
 for model_file in "${MODELS[@]}"; do
 
     FULL_MODEL_PATH="${MODEL_BASE_PATH}/${model_file}"
@@ -41,23 +41,19 @@ for model_file in "${MODELS[@]}"; do
     arch_name="${temp_name%%_mnist*}"
     csv_name="./results2/new_experiment_${model_file%.pth}.csv"
 
-    # Print a "working" message so you know it hasn't frozen
+    # Print a "working" message
     echo -n "Processing $arch_name ... "
 
-    # Run the command silently
-    # > /dev/null 2>&1 hides both standard output and errors
-    # if True
-    python main_auto.py \
+    # FIX 1: Added 'if' before 'python'
+    if python main_auto.py \
         --model_path "$FULL_MODEL_PATH" \
         --model "$arch_name" \
         --dataset 'mnist' \
         --output_csv "$csv_name" \
-        --batch_size 4> /dev/null 2>&1; then
-        
-        # This prints only if python exit code was 0 (Success)
+        --batch_size 4   ; then 
+        # > /dev/null 2>&1
         echo "✅ Done. (Saved to $csv_name)"
     else
-        # This prints if python crashed
         echo "❌ Failed."
     fi
 
@@ -70,38 +66,33 @@ echo "All l2 experiments finished."
 echo "Starting batch processing linf..."
 echo "---------------------------------------------------"
 
-# 3. Loop through the array
+# 4. Loop through the array (Linf)
 for model_file in "${MODELS[@]}"; do
 
     FULL_MODEL_PATH="${MODEL_BASE_PATH}/${model_file}"
 
-    # Check if file exists
     if [ ! -f "$FULL_MODEL_PATH" ]; then
         echo "❌ Error: File not found: $model_file"
         continue
     fi
 
-    # Parse logic
     temp_name="${model_file#vanilla_}"
     arch_name="${temp_name%%_mnist*}"
-    csv_name="new_experiment_${model_file%.pth}.csv"
+    csv_name="./results2/new_experiment_${model_file%.pth}.csv"
 
-    # Print a "working" message so you know it hasn't frozen
     echo -n "Processing $arch_name ... "
 
-    # Run the command silently
-    # > /dev/null 2>&1 hides both standard output and errors
+    # FIX 2: Fixed '---batch_size' to '--batch_size'
     if python main_auto.py \
         --model_path "$FULL_MODEL_PATH" \
         --model "$arch_name" \
         --dataset 'mnist' \
         --output_csv "$csv_name" \
-        --norm 'inf' > /dev/null 2>&1; then
+        --norm 'inf' \
+        --batch_size 4 > /dev/null 2>&1; then
         
-        # This prints only if python exit code was 0 (Success)
         echo "✅ Done. (Saved to $csv_name)"
     else
-        # This prints if python crashed
         echo "❌ Failed."
     fi
 

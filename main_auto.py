@@ -328,7 +328,7 @@ def main():
     parser.add_argument('--dataset', type=str, required=True, choices=['cifar10', 'mnist'])
     parser.add_argument('--batch_size', type=int, default=2)
     parser.add_argument('--output_csv', type=str, default='results/study.csv')
-    parser.add_argument('--num_points', type=int, default=100, help='Points to sample in linear paving')
+    parser.add_argument('--num_points', type=int, default=50, help='Points to sample in linear paving')
     parser.add_argument('--start', default=0, type=int, help='start index for the dataset')
     parser.add_argument('--end', default=200, type=int, help='end index for the dataset')
     parser.add_argument('--lr_alpha', default=0.5, type=float, help='alpha learning rate')
@@ -431,6 +431,7 @@ def main():
             if cra_val <= 0: solvers["cra"] = False
         else:
             result_dict['certificate'] = 0.0
+            result_dict['time_cra'] = 0.0
 
         # --- B. New Power Iteration CRA (L_PI) ---
         if solvers["cra_pi"]:
@@ -447,6 +448,7 @@ def main():
             if cra_pi_val <= 0: solvers["cra_pi"] = False
         else:
             result_dict['certificate_pi'] = 0.0
+            result_dict['time_cra_pi'] = 0.0
 
         # --- Setup for Crown ---
         x_L = torch.zeros((1, 1, 28, 28), device=device)
@@ -471,6 +473,7 @@ def main():
             if vra <= 0: solvers["alphacrown"] = False
         else:
             result_dict['lirpa_alphacrown'] = 0.0
+            result_dict['time_lirpa_alpha'] = 0.0
 
         # --- Beta/SDP CROWN (Heavy) ---
         if solvers["heavy_certified"]:
@@ -497,7 +500,9 @@ def main():
             if v_acc <= 0: solvers["heavy_certified"] = False
         else:
             result_dict['lirpa_betacrown'] = 0.0
+            result_dict['time_lirpa_beta'] = 0.0
             result_dict['sdp'] = 0.0
+            result_dict['time_sdp'] = 0.0
 
         # --- 3. CALCULATE BEST CERTIFIED (UNION) ---
         total_samples = images.shape[0]

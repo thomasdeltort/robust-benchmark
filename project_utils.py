@@ -4,6 +4,7 @@ from torch.utils.data import DataLoader
 import torch
 import torch.nn as nn
 import os
+import shutil
 from models import * # Make sure this import works from your utils.py location
 # try:
 #     sys.path.append('/home/aws_install/robustess_project/lip_notebooks/notebooks_creation_models')
@@ -413,51 +414,50 @@ def convert_lipschitz_constant(L_2, norm, input_dim):
         return L_inf
     else:
         raise ValueError(f"Unsupported norm: '{norm}'. Please use '2' or 'inf'.")
-    
+
 def add_result_and_sort(result_dict, base_csv_filepath, round_digits=3, norm='2'):
     """
     Adds a new result to a norm-specific CSV file and sorts it.
-
-    The function constructs a filename based on the provided norm (e.g.,
-    'results_2.csv', 'results_inf.csv'), reads the existing data from that
-    specific file, adds the new result, sorts all entries by the 'epsilon'
-    value, and then overwrites the file.
-
-    Args:
-        result_dict (dict): A dictionary containing the new row of data.
-        base_csv_filepath (str): The base path for the CSV file. The norm will be
-                                 appended to this filename.
-        round_digits (int): The number of decimal places for rounding time values.
-        norm (int or str): The norm used for the result (e.g., 2 or 'inf').
+    Safer version: Does not wipe data on header mismatch.
     """
     # --- 1. Construct the norm-specific filename ---
     name, ext = os.path.splitext(base_csv_filepath)
     csv_filepath = f"{name}_norm_{norm}{ext}"
 
     # --- 2. Prepare the data and header ---
-    # The header is now just the keys of the result dictionary.
-    header = list(result_dict.keys())
-
-    # --- 3. Read all existing data into a list of dictionaries ---
+    current_keys = list(result_dict.keys())
+    
+    # --- 3. Read all existing data ---
     all_data_dicts = []
     
     directory = os.path.dirname(csv_filepath)
     if directory and not os.path.exists(directory):
         os.makedirs(directory)
 
+    existing_fieldnames = []
+
     if os.path.exists(csv_filepath) and os.path.getsize(csv_filepath) > 0:
         try:
             with open(csv_filepath, 'r', newline='') as file:
                 reader = csv.DictReader(file)
-                # Check for header consistency
-                if reader.fieldnames and set(reader.fieldnames) != set(header):
-                     print(f"⚠️  Warning: Header mismatch in '{csv_filepath}'. Overwriting with new data.")
-                else:
-                    all_data_dicts.extend(list(reader))
+                existing_fieldnames = reader.fieldnames if reader.fieldnames else []
+                # Load data regardless of header mismatch
+                all_data_dicts.extend(list(reader))
+                
+                # Check for mismatch just for notification
+                if set(existing_fieldnames) != set(current_keys):
+                    print(f"⚠️  Warning: Header mismatch in '{csv_filepath}'. Merging headers.")
+                    
         except Exception as e:
-            print(f"⚠️  Could not parse existing file '{csv_filepath}'. Starting fresh. Error: {e}")
+            print(f"❌ CRITICAL ERROR: Could not read existing file '{csv_filepath}'.")
+            print(f"❌ Error details: {e}")
+            return 
 
-    # --- 4. Add the new result and apply rounding ---
+    # --- 4. Merge Headers ---
+    # Create a superset of all keys found in old file and new result
+    final_header = list(dict.fromkeys(existing_fieldnames + current_keys))
+
+    # --- 5. Add the new result and apply rounding ---
     processed_result = {}
     for key, value in result_dict.items():
         if str(key).startswith('time_') and isinstance(value, (float, int)):
@@ -466,23 +466,103 @@ def add_result_and_sort(result_dict, base_csv_filepath, round_digits=3, norm='2'
             processed_result[key] = value
     all_data_dicts.append(processed_result)
 
-    # --- 5. Sort the data by the 'epsilon' value ---
+    # --- 6. Sort ---
     try:
-        all_data_dicts.sort(key=lambda row_dict: float(row_dict['epsilon']))
+        all_data_dicts.sort(key=lambda row_dict: float(row_dict.get('epsilon', 0)))
     except (KeyError, ValueError) as e:
-        print(f"❌ Error: Could not sort. Ensure 'epsilon' exists and is a number. Error: {e}")
-        return 
+        print(f"❌ Error: Could not sort. {e}")
 
-    # --- 6. Write the sorted data back to the file ---
+    # --- 7. Write Safely ---
     try:
+        # Use 'w' to overwrite, but we have all previous data in all_data_dicts
         with open(csv_filepath, 'w', newline='') as file:
-            writer = csv.DictWriter(file, fieldnames=header)
+            writer = csv.DictWriter(file, fieldnames=final_header)
             writer.writeheader()
             writer.writerows(all_data_dicts)
         
         print(f"✅ Successfully added result to '{csv_filepath}' for epsilon={result_dict['epsilon']}.")
     except Exception as e:
         print(f"❌ Error: Failed to write to CSV file '{csv_filepath}'. Error: {e}")
+
+# def add_result_and_sort(result_dict, base_csv_filepath, round_digits=3, norm='2'):
+#     """
+#     Adds a new result to a norm-specific CSV file and sorts it.
+
+#     The function constructs a filename based on the provided norm (e.g.,
+#     'results_2.csv', 'results_inf.csv'), reads the existing data from that
+#     specific file, adds the new result, sorts all entries by the 'epsilon'
+#     value, and then overwrites the file.
+
+#     Args:
+#         result_dict (dict): A dictionary containing the new row of data.
+#         base_csv_filepath (str): The base path for the CSV file. The norm will be
+#                                  appended to this filename.
+#         round_digits (int): The number of decimal places for rounding time values.
+#         norm (int or str): The norm used for the result (e.g., 2 or 'inf').
+#     """
+#     # --- 1. Construct the norm-specific filename ---
+#     name, ext = os.path.splitext(base_csv_filepath)
+#     csv_filepath = f"{name}_norm_{norm}{ext}"
+
+#     # --- 2. Prepare the data and header ---
+#     # The header is now just the keys of the result dictionary.
+#     header = list(result_dict.keys())
+
+#     # --- 3. Read all existing data into a list of dictionaries ---
+#     all_data_dicts = []
+    
+#     directory = os.path.dirname(csv_filepath)
+#     if directory and not os.path.exists(directory):
+#         os.makedirs(directory)
+
+#     if os.path.exists(csv_filepath) and os.path.getsize(csv_filepath) > 0:
+#         try:
+#             with open(csv_filepath, 'r', newline='') as file:
+#                 reader = csv.DictReader(file)
+#                 # Check for header consistency
+#                 if reader.fieldnames and set(reader.fieldnames) != set(header):
+#                      print(f"⚠️  Warning: Header mismatch in '{csv_filepath}'. Overwriting with new data.")
+#                 else:
+#                     all_data_dicts.extend(list(reader))
+#         except Exception as e:
+#             # # --- IMPROVEMENT: Backup before wiping ---
+#             # backup_path = csv_filepath + ".bak"
+#             # shutil.copy(csv_filepath, backup_path)
+#             # print(f"⚠️  Read Error: {e}")
+#             # print(f"⚠️  Corrupted file backed up to '{backup_path}'. Starting fresh.")
+#             # all_data_dicts = [] # Reset
+#             # print(f"⚠️  Could not parse existing file '{csv_filepath}'. Starting fresh. Error: {e}")
+#             print(f"❌ CRITICAL ERROR: Could not read existing file '{csv_filepath}'.")
+#             print(f"❌ Error details: {e}")
+#             print("❌ To prevent data loss, the script will stop writing to this file.")
+#             return  # Stop immediately. Do NOT overwrite the file.
+
+#     # --- 4. Add the new result and apply rounding ---
+#     processed_result = {}
+#     for key, value in result_dict.items():
+#         if str(key).startswith('time_') and isinstance(value, (float, int)):
+#             processed_result[key] = round(value, round_digits)
+#         else:
+#             processed_result[key] = value
+#     all_data_dicts.append(processed_result)
+
+#     # --- 5. Sort the data by the 'epsilon' value ---
+#     try:
+#         all_data_dicts.sort(key=lambda row_dict: float(row_dict['epsilon']))
+#     except (KeyError, ValueError) as e:
+#         print(f"❌ Error: Could not sort. Ensure 'epsilon' exists and is a number. Error: {e}")
+#         return 
+
+#     # --- 6. Write the sorted data back to the file ---
+#     try:
+#         with open(csv_filepath, 'w', newline='') as file:
+#             writer = csv.DictWriter(file, fieldnames=header)
+#             writer.writeheader()
+#             writer.writerows(all_data_dicts)
+        
+#         print(f"✅ Successfully added result to '{csv_filepath}' for epsilon={result_dict['epsilon']}.")
+#     except Exception as e:
+#         print(f"❌ Error: Failed to write to CSV file '{csv_filepath}'. Error: {e}")
 
 def replace_groupsort(model, dummy_input):
     """
