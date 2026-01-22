@@ -14,7 +14,7 @@ import torch.nn as nn
 import sys
 
 # Update path to your local SDP-CROWN repository
-SDP_CROWN_PATH = '/home/aws_install/robustess_project/SDP-CROWN'
+SDP_CROWN_PATH = 'SDP-CROWN'
 sys.path.insert(0, SDP_CROWN_PATH)
 
 from auto_LiRPA import BoundedModule, BoundedTensor, register_custom_op

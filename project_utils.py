@@ -4,8 +4,8 @@ from torch.utils.data import DataLoader
 import torch
 import torch.nn as nn
 import os
-import shutil
 from models import * # Make sure this import works from your utils.py location
+import shutil
 # try:
 #     sys.path.append('/home/aws_install/robustess_project/lip_notebooks/notebooks_creation_models')
 #     from VGG_Arthur import HKRMultiLossLSE
@@ -414,7 +414,7 @@ def convert_lipschitz_constant(L_2, norm, input_dim):
         return L_inf
     else:
         raise ValueError(f"Unsupported norm: '{norm}'. Please use '2' or 'inf'.")
-
+    
 def add_result_and_sort(result_dict, base_csv_filepath, round_digits=3, norm='2'):
     """
     Adds a new result to a norm-specific CSV file and sorts it.
@@ -483,86 +483,6 @@ def add_result_and_sort(result_dict, base_csv_filepath, round_digits=3, norm='2'
         print(f"✅ Successfully added result to '{csv_filepath}' for epsilon={result_dict['epsilon']}.")
     except Exception as e:
         print(f"❌ Error: Failed to write to CSV file '{csv_filepath}'. Error: {e}")
-
-# def add_result_and_sort(result_dict, base_csv_filepath, round_digits=3, norm='2'):
-#     """
-#     Adds a new result to a norm-specific CSV file and sorts it.
-
-#     The function constructs a filename based on the provided norm (e.g.,
-#     'results_2.csv', 'results_inf.csv'), reads the existing data from that
-#     specific file, adds the new result, sorts all entries by the 'epsilon'
-#     value, and then overwrites the file.
-
-#     Args:
-#         result_dict (dict): A dictionary containing the new row of data.
-#         base_csv_filepath (str): The base path for the CSV file. The norm will be
-#                                  appended to this filename.
-#         round_digits (int): The number of decimal places for rounding time values.
-#         norm (int or str): The norm used for the result (e.g., 2 or 'inf').
-#     """
-#     # --- 1. Construct the norm-specific filename ---
-#     name, ext = os.path.splitext(base_csv_filepath)
-#     csv_filepath = f"{name}_norm_{norm}{ext}"
-
-#     # --- 2. Prepare the data and header ---
-#     # The header is now just the keys of the result dictionary.
-#     header = list(result_dict.keys())
-
-#     # --- 3. Read all existing data into a list of dictionaries ---
-#     all_data_dicts = []
-    
-#     directory = os.path.dirname(csv_filepath)
-#     if directory and not os.path.exists(directory):
-#         os.makedirs(directory)
-
-#     if os.path.exists(csv_filepath) and os.path.getsize(csv_filepath) > 0:
-#         try:
-#             with open(csv_filepath, 'r', newline='') as file:
-#                 reader = csv.DictReader(file)
-#                 # Check for header consistency
-#                 if reader.fieldnames and set(reader.fieldnames) != set(header):
-#                      print(f"⚠️  Warning: Header mismatch in '{csv_filepath}'. Overwriting with new data.")
-#                 else:
-#                     all_data_dicts.extend(list(reader))
-#         except Exception as e:
-#             # # --- IMPROVEMENT: Backup before wiping ---
-#             # backup_path = csv_filepath + ".bak"
-#             # shutil.copy(csv_filepath, backup_path)
-#             # print(f"⚠️  Read Error: {e}")
-#             # print(f"⚠️  Corrupted file backed up to '{backup_path}'. Starting fresh.")
-#             # all_data_dicts = [] # Reset
-#             # print(f"⚠️  Could not parse existing file '{csv_filepath}'. Starting fresh. Error: {e}")
-#             print(f"❌ CRITICAL ERROR: Could not read existing file '{csv_filepath}'.")
-#             print(f"❌ Error details: {e}")
-#             print("❌ To prevent data loss, the script will stop writing to this file.")
-#             return  # Stop immediately. Do NOT overwrite the file.
-
-#     # --- 4. Add the new result and apply rounding ---
-#     processed_result = {}
-#     for key, value in result_dict.items():
-#         if str(key).startswith('time_') and isinstance(value, (float, int)):
-#             processed_result[key] = round(value, round_digits)
-#         else:
-#             processed_result[key] = value
-#     all_data_dicts.append(processed_result)
-
-#     # --- 5. Sort the data by the 'epsilon' value ---
-#     try:
-#         all_data_dicts.sort(key=lambda row_dict: float(row_dict['epsilon']))
-#     except (KeyError, ValueError) as e:
-#         print(f"❌ Error: Could not sort. Ensure 'epsilon' exists and is a number. Error: {e}")
-#         return 
-
-#     # --- 6. Write the sorted data back to the file ---
-#     try:
-#         with open(csv_filepath, 'w', newline='') as file:
-#             writer = csv.DictWriter(file, fieldnames=header)
-#             writer.writeheader()
-#             writer.writerows(all_data_dicts)
-        
-#         print(f"✅ Successfully added result to '{csv_filepath}' for epsilon={result_dict['epsilon']}.")
-#     except Exception as e:
-#         print(f"❌ Error: Failed to write to CSV file '{csv_filepath}'. Error: {e}")
 
 def replace_groupsort(model, dummy_input):
     """
@@ -958,7 +878,7 @@ def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indic
 
 
 import sys
-sys.path.insert(0,'/home/aws_install/robustess_project/SDP-CROWN')
+sys.path.insert(0,'SDP-CROWN')
 import auto_LiRPA
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
@@ -1004,7 +924,7 @@ def build_C(label, classes):
     return C
 
 
-def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indices, batch_size=2, norm=2, return_robust_points=False, x_U=None, x_L=None):
+def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indices, args, batch_size=2, norm=2, return_robust_points=False, x_U=None, x_L=None):
     """
     Computes Certified Robust Accuracy (CRA) using Alpha-Crown.
     
@@ -1108,8 +1028,9 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
         # Optimize bounds (Alpha-CROWN settings)
         bounded_model.set_bound_opts({
             'optimize_bound_args': {
-                'iteration': 200, 
-                'early_stop_patience': 30, 
+                'iteration': 300, 
+                'lr_alpha': args.lr_alpha,
+                'early_stop_patience': 20, 
                 'enable_opt_interm_bounds': True, 
                 'verbosity': False
             }, 
@@ -1148,7 +1069,7 @@ import time
 import torch
 import numpy as np
 
-sys.path.append("/home/aws_install/robustess_project/alpha-beta-CROWN/complete_verifier")
+sys.path.append("alpha-beta-CROWN/complete_verifier")
 from abcrown import ABCROWN # Import the main class from your script
 
 
@@ -1235,7 +1156,7 @@ def compute_alphabeta_vra_and_time(dataset_name, model_name, model_path, epsilon
     return true_vra, avg_time
 
 
-sys.path.append('/home/aws_install/robustess_project/SDP-CROWN')
+sys.path.append('SDP-CROWN')
 from sdp_crown import verified_sdp_crown
 
 
@@ -1243,76 +1164,72 @@ def compute_sdp_crown_vra(dataset, labels, model, radius, clean_output, device, 
     return verified_sdp_crown(dataset, labels, model, radius, clean_output, device, classes, args, batch_size, return_robust_points=return_robust_points, x_U=x_U, x_L=x_L)
 
 
-# import boto3
+import boto3
 import os
-# from botocore.exceptions import NoCredentialsError, ClientError
+from botocore.exceptions import NoCredentialsError, ClientError
 
-# def download_s3_folder(bucket_name="tdrobustbucket", s3_folder="lip_models", local_dir="./models"):
-#     """
-#     Downloads an S3 folder to a local directory.
-#     """
-#     s3 = boto3.client('s3')
+def download_s3_folder(bucket_name="tdrobustbucket", s3_folder="lip_models", local_dir="./models"):
+    """
+    Downloads an S3 folder to a local directory.
+    """
+    s3 = boto3.client('s3')
 
-#     # Ensure the local directory exists
-#     if not os.path.exists(local_dir):
-#         os.makedirs(local_dir)
+    # Ensure the local directory exists
+    if not os.path.exists(local_dir):
+        os.makedirs(local_dir)
 
-#     # Handle pagination in case there are many models
-#     paginator = s3.get_paginator('list_objects_v2')
-#     pages = paginator.paginate(Bucket=bucket_name, Prefix=s3_folder)
+    # Handle pagination in case there are many models
+    paginator = s3.get_paginator('list_objects_v2')
+    pages = paginator.paginate(Bucket=bucket_name, Prefix=s3_folder)
 
-#     print(f"--- Starting sync from s3://{bucket_name}/{s3_folder} to {local_dir} ---")
+    print(f"--- Starting sync from s3://{bucket_name}/{s3_folder} to {local_dir} ---")
 
-#     download_count = 0
+    download_count = 0
 
-#     try:
-#         for page in pages:
-#             # Check if the folder is empty
-#             if 'Contents' not in page:
-#                 continue
+    try:
+        for page in pages:
+            # Check if the folder is empty
+            if 'Contents' not in page:
+                continue
 
-#             for obj in page['Contents']:
-#                 s3_key = obj['Key']
+            for obj in page['Contents']:
+                s3_key = obj['Key']
                 
-#                 # Skip directory markers (keys ending in /)
-#                 if s3_key.endswith('/'):
-#                     continue
+                # Skip directory markers (keys ending in /)
+                if s3_key.endswith('/'):
+                    continue
 
-#                 # Remove the 'lip_models/' prefix to map correctly to './models/'
-#                 # e.g., 'lip_models/model.pth' becomes 'model.pth'
-#                 relative_path = os.path.relpath(s3_key, s3_folder)
-#                 local_file_path = os.path.join(local_dir, relative_path)
+                # Remove the 'lip_models/' prefix to map correctly to './models/'
+                # e.g., 'lip_models/model.pth' becomes 'model.pth'
+                relative_path = os.path.relpath(s3_key, s3_folder)
+                local_file_path = os.path.join(local_dir, relative_path)
 
-#                 # Create local subdirectories if they exist in S3 structure
-#                 local_file_dir = os.path.dirname(local_file_path)
-#                 if not os.path.exists(local_file_dir):
-#                     os.makedirs(local_file_dir)
+                # Create local subdirectories if they exist in S3 structure
+                local_file_dir = os.path.dirname(local_file_path)
+                if not os.path.exists(local_file_dir):
+                    os.makedirs(local_file_dir)
 
-#                 # Download
-#                 print(f"Downloading: {s3_key} -> {local_file_path}")
-#                 s3.download_file(bucket_name, s3_key, local_file_path)
-#                 download_count += 1
+                # Download
+                print(f"Downloading: {s3_key} -> {local_file_path}")
+                s3.download_file(bucket_name, s3_key, local_file_path)
+                download_count += 1
 
-#         if download_count == 0:
-#             print("No files found in the specified S3 folder.")
-#         else:
-#             print(f"\nSuccess! {download_count} files downloaded.")
+        if download_count == 0:
+            print("No files found in the specified S3 folder.")
+        else:
+            print(f"\nSuccess! {download_count} files downloaded.")
 
-#     except NoCredentialsError:
-#         print("Error: AWS credentials not found. Please run 'aws configure'.")
-#     except ClientError as e:
-#         print(f"AWS Client Error: {e}")
-#     except Exception as e:
-#         print(f"Unexpected Error: {e}")
+    except NoCredentialsError:
+        print("Error: AWS credentials not found. Please run 'aws configure'.")
+    except ClientError as e:
+        print(f"AWS Client Error: {e}")
+    except Exception as e:
+        print(f"Unexpected Error: {e}")
 
-# if __name__ == "__main__":
-#     # --- Configuration matches your training script ---
-#     BUCKET_NAME = "tdrobustbucket"
-#     S3_FOLDER = "lip_models" 
-#     LOCAL_DIRECTORY = "./models" 
+if __name__ == "__main__":
+    # --- Configuration matches your training script ---
+    BUCKET_NAME = "tdrobustbucket"
+    S3_FOLDER = "lip_models" 
+    LOCAL_DIRECTORY = "./models" 
 
-#     # download_s3_folder(BUCKET_NAME, S3_FOLDER, LOCAL_DIRECTORY)
-
-#     import pickle as pkl
-#     dict = pkl.load("Robust_Benchmark/results2/robust_points/MLP_MNIST_1_LIP_Bjork_2_vectors.pkl")
-#     print(dict)
+    download_s3_folder(BUCKET_NAME, S3_FOLDER, LOCAL_DIRECTORY)

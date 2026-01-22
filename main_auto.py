@@ -3,6 +3,8 @@ import numpy as np
 import argparse
 import os
 import time
+import gc
+import copy 
 from models import *
 from project_utils import *
 from robustness_registery import *
@@ -60,6 +62,7 @@ model_zoo = {
     "VGG16_1_LIP_Bjork_CIFAR10": VGG16_1_LIP_Bjork_CIFAR10 if 'VGG16_1_LIP_Bjork_CIFAR10' in globals() else None,
     "VGG19_1_LIP_Bjork_CIFAR10": VGG19_1_LIP_Bjork_CIFAR10 if 'VGG19_1_LIP_Bjork_CIFAR10' in globals() else None,
 }
+
 def find_max_epsilon_binary_CRA(images, model, clean_indices, args, L, tol=0.005):
     """
     Finds the largest epsilon where Certified Robust Accuracy (CRA) is still > 0.
@@ -79,47 +82,51 @@ def find_max_epsilon_binary_CRA(images, model, clean_indices, args, L, tol=0.005
     high_rescaled = high / scale_factor
     
     # 3. Check Upper Bound & Expand if Necessary
-    # We loop until we find an epsilon 'high' where the model is fully broken (CRA == 0)
     while True:
-        _, cra, _ = compute_certificates_CRA(
-            images, model, high_rescaled, clean_indices, 
-            norm=str(args.norm), L=L
-        )
-        
-        if cra <= 0:
-            print(f"  Boundary found within [0, {high:.2f}] (Internal: {high_rescaled:.2f})")
-            break
-        else:
-            print(f"  Warning: Model still robust (CRA={cra:.2f}%) at {high:.2f}. Doubling search range...")
-            low = high
-            low_rescaled = high_rescaled
+        try:
+            _, cra, _ = compute_certificates_CRA(
+                images, model, high_rescaled, clean_indices, 
+                norm=str(args.norm), L=L
+            )
             
-            high *= 2
-            high_rescaled *= 2
-            
-            # Safety break to prevent infinite loops on degenerate models
-            if high > 1000: 
-                print("  ! Safety limit reached. Stopping expansion.")
+            if cra <= 0:
+                print(f"  Boundary found within [0, {high:.2f}] (Internal: {high_rescaled:.2f})")
                 break
+            else:
+                print(f"  Warning: Model still robust (CRA={cra:.2f}%) at {high:.2f}. Doubling search range...")
+                low = high
+                low_rescaled = high_rescaled
+                high *= 2
+                high_rescaled *= 2
+                
+                # Safety break
+                if high > 1000: 
+                    print("  ! Safety limit reached. Stopping expansion.")
+                    break
+        except torch.cuda.OutOfMemoryError:
+            print("  ! OOM during boundary search. Reducing high bound and stopping expansion.")
+            torch.cuda.empty_cache()
+            break
 
     # 4. Perform Binary Search
     best_eps = low_rescaled
     
-    # Standard binary search between the now-confirmed [low, high]
     while (high_rescaled - low_rescaled) > (tol / scale_factor):
         mid = (low_rescaled + high_rescaled) / 2
-        
-        _, cra, _ = compute_certificates_CRA(
-            images, model, mid, clean_indices, 
-            norm=str(args.norm), L=L
-        )
-        # print(f"  Testing Epsilon: {mid * scale_factor:.4f} | CRA: {cra:.2f}%")
-        
-        if cra > 0:
-            best_eps = mid
-            low_rescaled = mid
-        else:
-            high_rescaled = mid
+        try:
+            _, cra, _ = compute_certificates_CRA(
+                images, model, mid, clean_indices, 
+                norm=str(args.norm), L=L
+            )
+            if cra > 0:
+                best_eps = mid
+                low_rescaled = mid
+            else:
+                high_rescaled = mid
+        except torch.cuda.OutOfMemoryError:
+            print(f"  ! OOM at eps={mid:.4f}. Treating as non-robust to be safe.")
+            torch.cuda.empty_cache()
+            high_rescaled = mid 
             
     final_eps = best_eps * scale_factor
     print(f"Found Certified Boundary at Epsilon: {final_eps:.4f}")
@@ -141,6 +148,9 @@ def main():
     parser.add_argument('--lr_alpha', default=0.5, type=float, help='alpha learning rate')
     parser.add_argument('--lr_lambda', default=0.05, type=float, help='lambda learning rate')
     args = parser.parse_args()
+
+    # --- 1. SET ENVIRONMENT TO REDUCE FRAGMENTATION ---
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
     # Setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -178,39 +188,50 @@ def main():
     else:
         inp_shape = (1, 3, 32, 32)
 
-    L_2_empirical = compute_model_lipschitz(model, input_shape=inp_shape, device=device)
-    L_PI = convert_lipschitz_constant(L_2_empirical, str(args.norm), images[0].numel())
-    print(f"Power Iteration Lipschitz Constant (L_PI): {L_PI:.4f}")
+    try:
+        L_2_empirical = compute_model_lipschitz(model, input_shape=inp_shape, device=device)
+        L_PI = convert_lipschitz_constant(L_2_empirical, str(args.norm), images[0].numel())
+        print(f"Power Iteration Lipschitz Constant (L_PI): {L_PI:.4f}")
+    except Exception as e:
+        print(f"Warning: PI failed ({e}). Using Theoretical L.")
+        L_PI = L
 
-    # Phase 1: Find Baseline Boundary using CRA (Using original L to set range)
+    # Phase 1: Find Baseline Boundary using CRA
     cra_boundary = find_max_epsilon_binary_CRA(images, model, clean_indices, args, L)
     
-    # STRATEGY: Define paving max slightly higher than the CRA boundary.
     if args.norm == 'inf':
         paving_max = cra_boundary * 2
     else:
         paving_max = cra_boundary * 1.1
     
-    # Phase 2: Systematic Paving (0 -> Max)
+    # Phase 2: Systematic Paving
     epsilon_range = np.linspace(0.0001, paving_max, args.num_points)
     
     solvers = {
         "aa": True, 
         "cra": True, 
-        "cra_pi": True,  # Enable new solver
+        "cra_pi": True, 
         "alphacrown": True, 
         "heavy_certified": True 
     }
 
     print(f"\n[Phase 2] Paving Range [0, {paving_max:.4f}]")
-    print("         Stopping when Best Certified (Union) reaches 0%.")
+    print("        Stopping when Best Certified (Union) reaches 0%.")
 
     for eps in epsilon_range:
         print(f"\n--- EVALUATING EPSILON: {eps:.5f} ---")
+        
+        # --- Pre-iteration Cleanup ---
+        torch.cuda.empty_cache()
+        gc.collect()
+
         eps_rescaled = eps / 0.225 if "cifar" in args.dataset.lower() else eps
         result_dict = {'epsilon': eps}
         
         certified_indices_union = set()
+        
+        # --- Flag to prevent early stop on OOM ---
+        oom_occurred = False 
 
         # 1. EMPIRICAL FILTER (AutoAttack)
         if solvers["aa"]:
@@ -220,13 +241,12 @@ def main():
             )
             result_dict['aa'], result_dict['time_aa'] = era, t_aa
             registry.register(eps, "autoattack", idx_aa)
-            
             if era <= 0: solvers["aa"] = False
         else:
             result_dict['aa'], result_dict['time_aa'] = 0.0, 0.0
 
         # 2. CERTIFIED METHODS
-        # --- A. Original Lipschitz CRA (Theoretical L) ---
+        # --- A. Original Lipschitz CRA ---
         if solvers["cra"]:
             _, cra_val, t_cra, idx_cra = compute_certificates_CRA(
                 images, model, eps_rescaled, clean_indices, norm=str(args.norm), L=L, return_robust_points=True
@@ -234,25 +254,18 @@ def main():
             result_dict['certificate'], result_dict['time_cra'] = cra_val, t_cra
             registry.register(eps, "certificate", idx_cra)
             certified_indices_union.update(idx_cra.cpu().tolist())
-
             if cra_val <= 0: solvers["cra"] = False
         else:
-            cra_val = 0.0
             result_dict['certificate'] = 0.0
             result_dict['time_cra'] = 0.0
 
-        # --- B. New Power Iteration CRA (L_PI) ---
+        # --- B. New Power Iteration CRA ---
         if solvers["cra_pi"]:
             _, cra_pi_val, t_cra_pi, idx_cra_pi = compute_certificates_CRA(
                 images, model, eps_rescaled, clean_indices, norm=str(args.norm), L=L_PI, return_robust_points=True
             )
             result_dict['certificate_pi'], result_dict['time_cra_pi'] = cra_pi_val, t_cra_pi
             registry.register(eps, "certificate_pi", idx_cra_pi)
-            
-            # Note: We usually DON'T add L_PI certificates to the UNION if they are not theoretically guaranteed
-            # (since L_PI is an estimate). But if you trust it, uncomment the line below:
-            # certified_indices_union.update(idx_cra_pi.cpu().tolist())
-
             if cra_pi_val <= 0: solvers["cra_pi"] = False
         else:
             cra_pi_val = 0.0
@@ -270,59 +283,115 @@ def main():
 
         # --- Alpha-CROWN ---
         if solvers["alphacrown"]:
-            vra, t_v, idx_alpha = compute_alphacrown_vra_and_time(
-                images, targets, model, eps_rescaled, clean_indices, 
-                batch_size=args.batch_size, norm=args.norm, x_U=x_U, x_L=x_L, return_robust_points=True
-            )
-            result_dict['lirpa_alphacrown'], result_dict['time_lirpa_alpha'] = vra, t_v
-            registry.register(eps, "alphacrown", idx_alpha)
-            certified_indices_union.update(idx_alpha.cpu().tolist())
-            print(f"    [Alpha-CROWN] Acc: {vra:.2f}%")
+            try:
+                vra, t_v, idx_alpha = compute_alphacrown_vra_and_time(
+                    images, targets, model, eps_rescaled, clean_indices, args, 
+                    batch_size=args.batch_size, norm=args.norm, x_U=x_U, x_L=x_L, return_robust_points=True
+                )
+                result_dict['lirpa_alphacrown'], result_dict['time_lirpa_alpha'] = vra, t_v
+                registry.register(eps, "alphacrown", idx_alpha)
+                certified_indices_union.update(idx_alpha.cpu().tolist())
+                print(f"    [Alpha-CROWN] Acc: {vra:.2f}%")
+                if vra <= 0: solvers["alphacrown"] = False
 
-            if vra <= 0: solvers["alphacrown"] = False
+            except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                if "out of memory" in str(e).lower():
+                    print(f"    ❌ [Alpha-CROWN] OOM at eps={eps:.5f}. Skipping.")
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    result_dict['lirpa_alphacrown'] = -1.0
+                    result_dict['time_lirpa_alpha'] = 0.0
+                    oom_occurred = True
+                else:
+                    raise e
         else:
             result_dict['lirpa_alphacrown'] = 0.0
             result_dict['time_lirpa_alpha'] = 0.0
 
-        # --- Beta/SDP CROWN (Heavy) ---
+        # --- Beta/SDP CROWN (Heavy) with OOM SKIP Logic ---
         if solvers["heavy_certified"]:
-            if str(args.norm) == 'inf':
-                v_acc, t_v, idx_beta = compute_alphabeta_vra_and_time(
-                    args.dataset, args.model, args.model_path, eps, 
-                    'cifar_l2_norm.yaml', clean_indices, total_samples=images.shape[0], return_robust_points=True
-                )
-                result_dict['lirpa_betacrown'], result_dict['time_lirpa_beta'] = v_acc, t_v
-                registry.register(eps, "betacrown", idx_beta)
-                certified_indices_union.update(idx_beta.cpu().tolist())
-                print(f"    [Beta-CROWN]  Acc: {v_acc:.2f}%")
-                
-                # IMPORTANT: Set the OTHER method to 0.0 so keys stay consistent
-                result_dict['sdp'] = 0.0
-                result_dict['time_sdp'] = 0.0
-            else:
-                swapped_model = replace_groupsort(model, images[:1]).to(device)
-                v_acc, t_v, idx_sdp = compute_sdp_crown_vra(
-                    images, targets, swapped_model, float(eps_rescaled), clean_indices, 
-                    device, classes, args, batch_size=args.batch_size, return_robust_points=True, x_U=x_U, x_L=x_L
-                )
-                result_dict['sdp'], result_dict['time_sdp'] = v_acc, t_v
-                registry.register(eps, "sdp", idx_sdp)
-                certified_indices_union.update(idx_sdp.cpu().tolist())
-                print(f"    [SDP-CROWN]   Acc: {v_acc:.2f}%")
-
-                # IMPORTANT: Set the OTHER method to 0.0 so keys stay consistent
-                result_dict['lirpa_betacrown'] = 0.0
-                result_dict['time_lirpa_beta'] = 0.0
+            # Clean cache before heavy op
+            torch.cuda.empty_cache()
+            gc.collect()
             
-            if v_acc <= 0: solvers["heavy_certified"] = False
-        else:
-            # When disabled, set BOTH to 0.0 (This part was already correct in your code)
-            result_dict['lirpa_betacrown'] = 0.0
-            result_dict['time_lirpa_beta'] = 0.0
-            result_dict['sdp'] = 0.0
-            result_dict['time_sdp'] = 0.0
+            swapped_model = None # Safety init
+            
+            try:
+                if str(args.norm) == 'inf':
+                    # Beta-CROWN
+                    v_acc, t_v, idx_beta = compute_alphabeta_vra_and_time(
+                        args.dataset, args.model, args.model_path, eps, 
+                        'cifar_l2_norm.yaml', clean_indices, total_samples=images.shape[0], return_robust_points=True
+                    )
+                    
+                    result_dict['lirpa_betacrown'], result_dict['time_lirpa_beta'] = v_acc, t_v
+                    registry.register(eps, "betacrown", idx_beta)
+                    certified_indices_union.update(idx_beta.cpu().tolist())
+                    result_dict['sdp'], result_dict['time_sdp'] = 0.0, 0.0
+                    print(f"    [Beta-CROWN]  Acc: {v_acc:.2f}%")
+                    
+                    if v_acc <= 0: solvers["heavy_certified"] = False
 
-        # --- 3. CALCULATE BEST CERTIFIED (UNION) ---
+                else:
+                    # SDP-CROWN (L2)
+                    model_to_swap = copy.deepcopy(model)
+                    swapped_model = replace_groupsort(model_to_swap, images[:1]).to(device)
+                    
+                    # --- SANITY CHECK (ADDED) ---
+                    # Verify that swapping layers didn't break the model by comparing outputs
+                    with torch.no_grad():
+                        sample_batch = images[:5].to(device)
+                        orig_out = model(sample_batch)
+                        swap_out = swapped_model(sample_batch)
+                        diff = (orig_out - swap_out).abs().max().item()
+                        if diff > 1e-4: # Tolerance threshold
+                            print(f"    ⚠️ CRITICAL WARNING: Model Swap Failure! Max Diff: {diff:.6f}")
+                            print("         The replaced layers might not be mathematically equivalent.")
+                        else:
+                            print(f"    ✅ Model Swap Sanity Check Passed (Diff: {diff:.2e})")
+                    # ----------------------------
+
+                    v_acc, t_v, idx_sdp = compute_sdp_crown_vra(
+                        images, targets, swapped_model, float(eps_rescaled), clean_indices, 
+                        device, classes, args, batch_size=args.batch_size, return_robust_points=True, x_U=x_U, x_L=x_L
+                    )
+                    
+                    result_dict['sdp'], result_dict['time_sdp'] = v_acc, t_v
+                    registry.register(eps, "sdp", idx_sdp)
+                    certified_indices_union.update(idx_sdp.cpu().tolist())
+                    result_dict['lirpa_betacrown'], result_dict['time_lirpa_beta'] = 0.0, 0.0
+                    print(f"    [SDP-CROWN]   Acc: {v_acc:.2f}%")
+                    
+                    if v_acc <= 0: solvers["heavy_certified"] = False
+
+            except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                print(s(e))
+                    
+                # Log failure (-1.0) and prevent early stop
+                oom_occurred = True 
+                    
+                # Ensure CSV keys exist
+                if str(args.norm) == 'inf':
+                    result_dict['lirpa_betacrown'] = -1.0; result_dict['time_lirpa_beta'] = 0.0
+                    result_dict['sdp'] = 0.0; result_dict['time_sdp'] = 0.0
+                else:
+                    result_dict['sdp'] = -1.0; result_dict['time_sdp'] = 0.0
+                    result_dict['lirpa_betacrown'] = 0.0; result_dict['time_lirpa_beta'] = 0.0
+                    
+                # Clean up
+                if swapped_model is not None: del swapped_model
+                swapped_model = None
+                torch.cuda.empty_cache()
+                gc.collect()
+            finally:
+                if swapped_model is not None:
+                    del swapped_model
+                torch.cuda.empty_cache()
+        else:
+            result_dict['lirpa_betacrown'] = 0.0; result_dict['time_lirpa_beta'] = 0.0
+            result_dict['sdp'] = 0.0; result_dict['time_sdp'] = 0.0
+
+        # --- Final ---
         total_samples = images.shape[0]
         best_certified_acc = (len(certified_indices_union) / total_samples) * 100.0
         
@@ -340,7 +409,8 @@ def main():
         add_result_and_sort(result_dict, args.output_csv, norm=args.norm)
 
         # Dynamic Stop Condition
-        if best_certified_acc <= 0.0:
+        # CRITICAL: Do NOT stop if an OOM occurred (we treat OOM as "unknown" rather than "0% robust")
+        if best_certified_acc <= 0.0 and not oom_occurred:
             print(f"  > Stopping Early: All certified methods reached 0% at epsilon {eps:.5f}.")
             break
 
