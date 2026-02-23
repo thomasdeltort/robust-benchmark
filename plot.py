@@ -1,4 +1,4 @@
 from project_utils import *
 
 if __name__=='__main__':
-    create_robustness_plot_v2(filepath='/home/aws_install/robustess_project/Robust_Benchmark/MLP_LIP_Mnist_Linf_norm_inf.csv', output_filename='robust_accuracy_vs_epsilon_MLP_LIP_Mnist_Linf_norm_inf.png')
+    create_final_paper_plot(filepath='/home/aws_install/robust-benchmark/results2/new_experiment_vanilla_CNNA_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T0.5_bs256_lr0.001_eps0.155_light-_1766953221_acc0.62_norm_inf.csv', output_filename='3.png')

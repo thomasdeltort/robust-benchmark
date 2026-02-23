@@ -142,17 +142,18 @@ def main():
     parser.add_argument('--dataset', type=str, required=True, choices=['cifar10', 'mnist'])
     parser.add_argument('--batch_size', type=int, default=2)
     parser.add_argument('--output_csv', type=str, default='results/study.csv')
-    parser.add_argument('--num_points', type=int, default=50, help='Points to sample in linear paving')
+    parser.add_argument('--num_points', type=int, default=30, help='Points to sample in linear paving')
     parser.add_argument('--start', default=0, type=int, help='start index for the dataset')
     parser.add_argument('--end', default=200, type=int, help='end index for the dataset')
     parser.add_argument('--lr_alpha', default=0.5, type=float, help='alpha learning rate')
     parser.add_argument('--lr_lambda', default=0.05, type=float, help='lambda learning rate')
+    parser.add_argument('--high_tau', default=False, type=bool, help='Training temperature high/low')
     args = parser.parse_args()
 
     # --- 1. SET ENVIRONMENT TO REDUCE FRAGMENTATION ---
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     # torch.backends.cudnn.deterministic = True
-
+    print("Processing model :", args.model_path)
     # Setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     images, targets, classes = load_dataset_benchmark_auto(args)
@@ -203,7 +204,7 @@ def main():
     if args.norm == 'inf':
         paving_max = cra_boundary * 2
     else:
-        paving_max = cra_boundary * 1.1
+        paving_max = cra_boundary * 3
     
     # Phase 2: Systematic Paving
     epsilon_range = np.linspace(0.0001, paving_max, args.num_points)
@@ -212,14 +213,14 @@ def main():
         "aa": True, 
         "cra": True, 
         "cra_pi": True, 
-        "alphacrown": False, 
+        "alphacrown": True, 
         "heavy_certified": True 
     }
 
     print(f"\n[Phase 2] Paving Range [0, {paving_max:.4f}]")
     print("        Stopping when Best Certified (Union) reaches 0%.")
 
-    for eps in epsilon_range[2:10]:
+    for eps in epsilon_range[1:]:
         print(f"\n--- EVALUATING EPSILON: {eps:.5f} ---")
         
         # --- Pre-iteration Cleanup ---
@@ -341,12 +342,10 @@ def main():
                     else:
                         groupsort = False
 
-                    # Or the cleaner one-liner:
-                    # groupsort = ("GNP" in args.model) or ("Bjork" in args.model)
-
+                    
                     v_acc, t_v, idx_sdp = compute_sdp_crown_vra(
                         images, targets, model, float(eps_rescaled), clean_indices, 
-                        device, classes, args, batch_size=args.batch_size, return_robust_points=True, x_U=x_U, x_L=x_L, groupsort=groupsort
+                        device, classes, args, batch_size=1, return_robust_points=True, x_U=x_U, x_L=x_L, groupsort=groupsort
                     )
                     
                     result_dict['sdp'], result_dict['time_sdp'] = v_acc, t_v
@@ -399,7 +398,7 @@ def main():
             break
 
     print("\nStudy Complete. Results saved to:", args.output_csv)
-    create_robustness_plot_v3(f"{os.path.splitext(args.output_csv)[0]}_norm_{args.norm}.csv", f"{os.path.splitext(args.output_csv)[0]}_norm_{args.norm}.png")
+    create_final_paper_plot(f"{os.path.splitext(args.output_csv)[0]}_norm_{args.norm}.csv", f"{os.path.splitext(args.output_csv)[0]}_norm_{args.norm}.png")
 
 if __name__ == '__main__':
     main()

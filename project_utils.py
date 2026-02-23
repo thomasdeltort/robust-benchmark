@@ -484,142 +484,159 @@ def add_result_and_sort(result_dict, base_csv_filepath, round_digits=3, norm='2'
     except Exception as e:
         print(f"❌ Error: Failed to write to CSV file '{csv_filepath}'. Error: {e}")
 
-def replace_groupsort(model, dummy_input):
-    """
-    Replaces GroupSort layers with GroupSort_SparseConv (or user defined GroupSort).
-    """
-    # Dictionary to store (layer_name -> input_channels)
-    layer_configs = {}
-    hooks = []
-
-    # 1. Define Hook to capture shapes
-    def get_shape_hook(name):
-        def hook(module, input, output):
-            shape = input[0].shape
-            channels = shape[1] 
-            layer_configs[name] = channels
-        return hook
-
-    # 2. Register hooks on all GroupSort layers
-    for name, module in model.named_modules():
-        if isinstance(module, GroupSort_General) or "GroupSort" in str(type(module)):
-            hooks.append(module.register_forward_hook(get_shape_hook(name)))
-
-    # 3. Run Dummy Pass
-    model.eval()
-    with torch.no_grad():
-        model(dummy_input)
-
-    # 4. Remove hooks
-    for h in hooks:
-        h.remove()
-
-    # 5. Perform Replacement
-    print(f"   [Auto-Infer] Detected GroupSort channels: {layer_configs}")
-    
-    for name, module in model.named_modules():
-        for child_name, _ in module.named_children():
-            full_child_name = f"{name}.{child_name}" if name else child_name
-            
-            if full_child_name in layer_configs:
-                channels = layer_configs[full_child_name]
-                axis = 1 
-                
-                print(f"   -> Replacing {full_child_name} (Channels={channels})")
-                new_layer = GroupSort(channels=channels, axis=axis)
-                setattr(module, child_name, new_layer)
-
-    return model
 
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
 
-def create_robustness_plot_v3(filepath, output_filename):
+
+# --- 1. Global Style Configuration ---
+plt.rcParams.update({
+    "font.family": "serif",
+    "font.size": 14,
+    "axes.labelsize": 16,
+    "axes.titlesize": 18,
+    "legend.fontsize": 12,
+    "xtick.labelsize": 12,
+    "ytick.labelsize": 12,
+    "lines.linewidth": 2.5
+})
+
+def get_clean_title(filename):
     """
-    Generates a plot of robust accuracy vs. epsilon.
-    Includes 'best_certified' as the union of certified methods.
+    Extracts Model, Dataset, and specific keywords (GNP, Lip, Bjork) from filename.
+    Ignores 'vanilla'.
     """
+    base = os.path.basename(filename)
+    parts = base.split('_')
+    
+    keywords_to_keep = []
+    
+    # 1. Helper function to check keywords case-insensitively but preserve original casing
+    def check_keyword(part, target):
+        return part.lower() == target.lower()
+
+    # Iterate through parts to find relevant info
+    # We want to maintain the order they appear in the filename
+    
+    # Define all keywords we care about
+    model_keywords = ['ConvSmall', 'ConvLarge', 'MLP', 'CNNA', 'ResNet', 'CNN', 'ViT', 'ResNet18']
+    dataset_keywords = ['MNIST', 'CIFAR', 'CIFAR10', 'TinyImageNet']
+    extra_keywords = ['GNP', 'Lip', 'Bjork'] # Added specific requests
+    
+    for part in parts:
+        # Check Model
+        if part in model_keywords:
+            keywords_to_keep.append(part)
+            continue
+            
+        # Check Dataset
+        if part in dataset_keywords:
+            keywords_to_keep.append(part)
+            continue
+            
+        # Check Extra Keywords (Case insensitive check, append original)
+        for extra in extra_keywords:
+            if check_keyword(part, extra):
+                keywords_to_keep.append(part)
+                break
+            
+    if keywords_to_keep:
+        return " ".join(keywords_to_keep)
+    else:
+        return "Robustness Evaluation"
+
+def create_final_paper_plot(filepath, output_filename):
+    """
+    Generates the final plot with:
+    - Expanded Title (Model + Dataset + GNP/Lip/Bjork).
+    - Legend in Upper Right.
+    - Distinct line styles.
+    """
+    # --- Load Data ---
     try:
         df = pd.read_csv(filepath)
     except FileNotFoundError:
-        print(f"❌ Error: The file '{filepath}' was not found.")
+        print(f"❌ Error: File '{filepath}' not found.")
         return
 
-    # --- 1. Extract and Clean Model Name ---
-    filename_with_ext = os.path.basename(filepath)
-    filename_no_ext = os.path.splitext(filename_with_ext)[0]
-    parts = filename_no_ext.split('_')
-    if parts and parts[-1].lower() in ['inf', '2']:
-        parts.pop()
-    model_title_text = " ".join(parts)
-
-    # --- 2. Prepare Data ---
-    df = df.sort_values(by='epsilon').reset_index(drop=True)
+    # --- Prepare Title & Norm ---
+    title_text = get_clean_title(filepath)
+    filename_lower = os.path.basename(filepath).lower()
+    norm_label = r"$\ell_\infty$" if "norm_inf" in filename_lower else r"$\ell_2$"
     
-    # Add 'best_certified' to the beginning of the plot order so it appears in legend clearly
-    plot_order = ['best_certified', 'certificate', 'aa', 'lirpa_alphacrown', 'lirpa_betacrown', 'sdp']
-    
-    methods_to_plot = list(plot_order) 
-    
-    # Clean up mutually exclusive methods based on filename
-    if 'Linf' in filename_no_ext:
-        if 'sdp' in methods_to_plot: methods_to_plot.remove('sdp')
-    elif 'L2' in filename_no_ext:
-        if 'lirpa_betacrown' in methods_to_plot: methods_to_plot.remove('lirpa_betacrown')
-            
-    # Filter available columns
-    method_columns = [col for col in methods_to_plot if col in df.columns and col != 'epsilon' and not col.startswith('time_')]
-
-    # --- 3. Color and Style Mapping ---
-    # We define specific styles to make the Union metric distinct
-    style_map = {}
-    
-    color_map = {
-        'best_certified': '#2ca02c', # Green
-        'certificate': '#1f77b4',    # Blue
-        'aa': '#ff7f0e',             # Orange
-        'lirpa_alphacrown': '#9467bd', # Purple
-        'lirpa_betacrown': '#8c564b',  # Brown
-        'sdp': '#e377c2'              # Pink
+    # --- Define Styles ---
+    # Use empty tuple () for solid lines to fix TypeError
+    styles = {
+        'aa':               {'label': 'Upper Bound (Empirical)', 'color': '#8B0000', 'style': '--', 'dashes': (5, 3), 'zorder': 10},
+        'certificate':      {'label': 'CRA',           'color': '#0072B2', 'style': '-',  'dashes': (),        'zorder': 5},
+        # 'certificate_pi':   {'label': 'CRA (Pi)',      'color': "#850BF8", 'style': '--', 'dashes': (3, 1),    'zorder': 5}, # Teal/Greenish
+        'lirpa_alphacrown': {'label': r'$\alpha$-CROWN', 'color': '#009E73', 'style': '-.', 'dashes': (3, 1, 1, 1), 'zorder': 6},
+        'lirpa_betacrown':  {'label': r'$\beta$-CROWN',  'color': "#DDDA0E", 'style': '--', 'dashes': (5, 5),    'zorder': 7},
+        'sdp':              {'label': 'SDP',           'color': '#CC79A7', 'style': ':',  'dashes': (1, 1),     'zorder': 4},
     }
+
+    plot_methods = [m for m in styles.keys() if m in df.columns]
+    print(plot_methods)
+    # Exclusion Logic
+    if 'norm_inf' in filename_lower and 'sdp' in plot_methods: 
+        plot_methods.remove('sdp')
+    else:
+        # Assuming beta-crown is excluded for L2
+        plot_methods.remove('lirpa_betacrown')
+    print(plot_methods)
+    # --- Plotting ---
+    fig, ax = plt.subplots(figsize=(10, 7))
+
+    # 1. Dynamic Shading (Gap)
+    cert_cols = [m for m in plot_methods if m != 'aa']
+    if 'aa' in df.columns and cert_cols:
+        virtual_best = df[cert_cols].max(axis=1)
+        ax.fill_between(
+            df['epsilon'], 
+            virtual_best, 
+            df['aa'], 
+            color='#D55E00', 
+            alpha=0.10,      
+            label='Verification Gap'
+        )
+
+    # 2. Draw Lines
+    for method in plot_methods:
+        s = styles[method]
+        kwargs = {
+            'label': s['label'],
+            'color': s['color'],
+            'linestyle': s['style'],
+            'linewidth': 2.5,
+            'alpha': 0.85,
+            'zorder': s['zorder']
+        }
+        if s['dashes']: kwargs['dashes'] = s['dashes']
+        
+        ax.plot(df['epsilon'], df[method], **kwargs)
+
+    # --- Final Polish ---
+    full_title = f"{title_text} ({norm_label})"
+    ax.set_title(full_title, pad=20, weight='bold')
+    ax.set_xlabel(f"Perturbation Radius ({norm_label})", labelpad=10)
+    ax.set_ylabel("Robust Accuracy (%)", labelpad=10)
     
-    # --- 4. Plotting ---
-    sns.set_theme(style="whitegrid", context="talk")
-    plt.figure(figsize=(14, 9))
+    ax.set_ylim(-5, 105)
+    ax.set_xlim(left=0, right=df['epsilon'].max())
+    ax.grid(True, linestyle=':', alpha=0.6)
+    
+    # Legend - UPPER RIGHT
+    ax.legend(loc='upper right', frameon=True, fancybox=False, edgecolor='black', framealpha=1.0)
 
-    for method in method_columns:
-        label_name = method
-        if method == 'aa': label_name = 'AutoAttack'
-        if method == 'best_certified': label_name = 'Best Certified (Union)'
-        
-        # Use dashed line for the Union metric to distinguish it
-        linestyle = '--' if method == 'best_certified' else '-'
-        marker = 'D' if method == 'best_certified' else 'o'
-        alpha = 1.0 if method == 'best_certified' else 0.8
-        
-        plt.plot(df['epsilon'], df[method], 
-                 marker=marker, 
-                 linestyle=linestyle, 
-                 label=label_name, 
-                 color=color_map.get(method, '#7f7f7f'), 
-                 linewidth=3,
-                 markersize=10,
-                 alpha=alpha)
-
-    plt.title(f"Robust Accuracy vs. Epsilon\nModel: {model_title_text}", fontsize=22, weight='bold', pad=20)
-    plt.xlabel('Epsilon ($ε$)', fontsize=18, labelpad=10)
-    plt.ylabel('Robust Accuracy (%)', fontsize=18, labelpad=10)
-    plt.legend(title='Verification Method', title_fontsize=16, fontsize=14, loc='best', frameon=True, shadow=True)
-    plt.grid(True, which='both', linestyle='--', linewidth=1, alpha=0.7)
     plt.tight_layout()
-    
-    plt.savefig(output_filename)
-    print(f"✅ Plot saved as '{output_filename}'")
-    plt.close()
-# Example Usage:
-# create_robustness_plot_v3(filepath='results/results_Linf.csv', model_name="ResNet-18 (CIFAR-10)")
+    plt.savefig(output_filename, dpi=300)
+    print(f"✅ Saved updated plot to {output_filename}")
+
+# Example Usage
+# filename = "results_relu/new_experiment_vanilla_ConvSmall_MNIST_1_LIP_Bjork_mnist_tau_a250.0_T0.2_bs64_lr0.001_eps0.5_medium_1765204811_acc0.87_norm_2.csv"
+# create_distinct_paper_plot(filename, "final_plot_full_title.png")
 
 def compute_certificates_CRA(images, model, epsilon, correct_indices, norm='2', L=1, return_robust_points=False):
     """
@@ -640,7 +657,6 @@ def compute_certificates_CRA(images, model, epsilon, correct_indices, norm='2', 
         If return_robust_points is True:
             (certificates, cra, time_per_image, robust_indices)
     """
-    print(f"Norm: {norm}")
     
     # Ensure correct_indices is a tensor
     if not isinstance(correct_indices, torch.Tensor):
@@ -679,12 +695,7 @@ def compute_certificates_CRA(images, model, epsilon, correct_indices, norm='2', 
     # --- End of Timing ---
 
     # Adapt certificate computation to the norm
-    if norm == '2':
-        scale_certificate = np.sqrt(2)
-    elif norm == 'inf':
-        scale_certificate = 2.0
-    else:
-        raise ValueError(f"Unsupported norm: '{norm}'. Please use '2' or 'inf'.")
+    scale_certificate = np.sqrt(2)
 
     # --- Step 2: Calculate certificates ---
     # Calculate the margin divided by the Lipschitz constant and scale
@@ -712,9 +723,6 @@ def compute_certificates_CRA(images, model, epsilon, correct_indices, norm='2', 
         return certificates.cpu(), cra, time_per_img, robust_indices
     
     return certificates.cpu(), cra, time_per_img
-
-
-def compute_pgd_era_and_time(images, targets, model, epsilon, clean_indices, norm='2', dataset_name='cifar10'):
     """
     Computes Empirical Robust Accuracy (CRA) against a PGD L2 attack and
     measures the mean computation time per image.
@@ -834,7 +842,7 @@ def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indic
     if dataset_name == "cifar10":
         atk.set_normalization_used(
             mean=torch.tensor([0.4914, 0.4822, 0.4465]).view(3, 1, 1).to(device), 
-            std=torch.tensor([0.2023, 0.1994, 0.2010]).view(3, 1, 1).to(device)
+            std=torch.tensor([0.225, 0.225, 0.225]).view(3, 1, 1).to(device)
         )
 
     # --- Step 3: Run and Time Attack ---
@@ -1160,10 +1168,13 @@ sys.path.append('SDP-CROWN')
 from sdp_crown import verified_sdp_crown
 
 
+# def compute_sdp_crown_vra(dataset, labels, model, radius, clean_output, device, classes, args, batch_size=1, return_robust_points=False, x_U=None, x_L=None, groupsort=False):
+#     return verified_sdp_crown(dataset, labels, model, radius, clean_output, device, classes, args, batch_size=1, return_robust_points=return_robust_points, x_U=x_U, x_L=x_L, groupsort=groupsort)
+# def compute_sdp_crown_fixed_bs(dataset, labels, model, radius, clean_output, device, classes, args, batch_size=1, return_robust_points=False, x_U=None, x_L=None, groupsort=False):
+#     return verified_sdp_crown_fixed_bs(dataset, labels, model, radius, clean_output, device, classes, args, batch_size=batch_size, return_robust_points=return_robust_points, x_U=x_U, x_L=x_L, groupsort=groupsort)
+
 def compute_sdp_crown_vra(dataset, labels, model, radius, clean_output, device, classes, args, batch_size=1, return_robust_points=False, x_U=None, x_L=None, groupsort=False):
-    return verified_sdp_crown(dataset, labels, model, radius, clean_output, device, classes, args, batch_size, return_robust_points=return_robust_points, x_U=x_U, x_L=x_L, groupsort=groupsort)
-
-
+    return verified_sdp_crown(dataset, labels, model, radius, clean_output, device, classes, args, batch_size=1, return_robust_points=return_robust_points, x_U=x_U, x_L=x_L, groupsort=groupsort)
 # import boto3
 # import os
 # from botocore.exceptions import NoCredentialsError, ClientError
