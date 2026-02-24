@@ -200,12 +200,16 @@ def main():
 
     # Phase 1: Find Baseline Boundary using CRA
     cra_boundary = find_max_epsilon_binary_CRA(images, model, clean_indices, args, L)
-    
-    if args.norm == 'inf':
-        paving_max = cra_boundary * 2
+    if args.high_tau:
+        if args.norm == 'inf':
+            paving_max = cra_boundary * 3.5
+        else:
+            paving_max = cra_boundary * 3
     else:
-        paving_max = cra_boundary * 3
-    
+        if args.norm == 'inf':
+            paving_max = cra_boundary * 1.5
+        else:
+            paving_max = cra_boundary * 1.2
     # Phase 2: Systematic Paving
     epsilon_range = np.linspace(0.0001, paving_max, args.num_points)
     
