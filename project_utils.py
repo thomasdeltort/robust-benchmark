@@ -547,13 +547,197 @@ def get_clean_title(filename):
     else:
         return "Robustness Evaluation"
 
+# def create_final_paper_plot(filepath, output_filename):
+#     """
+#     Generates the final plot with:
+#     - Expanded Title (Model + Dataset + GNP/Lip/Bjork).
+#     - Legend in Upper Right.
+#     - Distinct line styles.
+#     """
+#     # --- Load Data ---
+#     try:
+#         df = pd.read_csv(filepath)
+#     except FileNotFoundError:
+#         print(f"❌ Error: File '{filepath}' not found.")
+#         return
+
+#     # --- Prepare Title & Norm ---
+#     title_text = get_clean_title(filepath)
+#     filename_lower = os.path.basename(filepath).lower()
+#     norm_label = r"$\ell_\infty$" if "norm_inf" in filename_lower else r"$\ell_2$"
+    
+#     # --- Define Styles ---
+#     # Use empty tuple () for solid lines to fix TypeError
+#     styles = {
+#         'aa':               {'label': 'Upper Bound (Empirical)', 'color': '#8B0000', 'style': '--', 'dashes': (5, 3), 'zorder': 10},
+#         'certificate':      {'label': 'CRA',           'color': '#0072B2', 'style': '-',  'dashes': (),        'zorder': 5},
+#         # 'certificate_pi':   {'label': 'CRA (Pi)',      'color': "#850BF8", 'style': '--', 'dashes': (3, 1),    'zorder': 5}, # Teal/Greenish
+#         'lirpa_alphacrown': {'label': r'$\alpha$-CROWN', 'color': '#009E73', 'style': '-.', 'dashes': (3, 1, 1, 1), 'zorder': 6},
+#         'lirpa_betacrown':  {'label': r'$\beta$-CROWN',  'color': "#DDDA0E", 'style': '--', 'dashes': (5, 5),    'zorder': 7},
+#         'sdp':              {'label': 'SDP',           'color': '#CC79A7', 'style': ':',  'dashes': (1, 1),     'zorder': 4},
+#     }
+
+#     plot_methods = [m for m in styles.keys() if m in df.columns]
+#     print(plot_methods)
+#     # Exclusion Logic
+#     if 'norm_inf' in filename_lower and 'sdp' in plot_methods: 
+#         plot_methods.remove('sdp')
+#     else:
+#         # Assuming beta-crown is excluded for L2
+#         plot_methods.remove('lirpa_betacrown')
+#     print(plot_methods)
+#     # --- Plotting ---
+#     fig, ax = plt.subplots(figsize=(10, 7))
+
+#     # 1. Dynamic Shading (Gap)
+#     cert_cols = [m for m in plot_methods if m != 'aa']
+#     if 'aa' in df.columns and cert_cols:
+#         virtual_best = df[cert_cols].max(axis=1)
+#         ax.fill_between(
+#             df['epsilon'], 
+#             virtual_best, 
+#             df['aa'], 
+#             color='#D55E00', 
+#             alpha=0.10,      
+#             label='Verification Gap'
+#         )
+
+#     # 2. Draw Lines
+#     for method in plot_methods:
+#         s = styles[method]
+#         kwargs = {
+#             'label': s['label'],
+#             'color': s['color'],
+#             'linestyle': s['style'],
+#             'linewidth': 2.5,
+#             'alpha': 0.85,
+#             'zorder': s['zorder']
+#         }
+#         if s['dashes']: kwargs['dashes'] = s['dashes']
+        
+#         ax.plot(df['epsilon'], df[method], **kwargs)
+
+#     # --- Final Polish ---
+#     full_title = f"{title_text} ({norm_label})"
+#     ax.set_title(full_title, pad=20, weight='bold')
+#     ax.set_xlabel(f"Perturbation Radius ({norm_label})", labelpad=10)
+#     ax.set_ylabel("Robust Accuracy (%)", labelpad=10)
+    
+#     ax.set_ylim(-5, 105)
+#     ax.set_xlim(left=0, right=df['epsilon'].max())
+#     ax.grid(True, linestyle=':', alpha=0.6)
+    
+#     # Legend - UPPER RIGHT
+#     ax.legend(loc='upper right', frameon=True, fancybox=False, edgecolor='black', framealpha=1.0)
+
+#     plt.tight_layout()
+#     plt.savefig(output_filename, dpi=300)
+#     print(f"✅ Saved updated plot to {output_filename}")
+
+# def create_final_paper_plot(filepath, output_filename):
+#     """
+#     Generates the final plot including Hybrid, CRA, AA, and CRA-PI.
+#     """
+#     import pandas as pd
+#     import matplotlib.pyplot as plt
+#     import os
+
+#     # --- Load Data ---
+#     try:
+#         df = pd.read_csv(filepath)
+#     except FileNotFoundError:
+#         print(f"❌ Error: File '{filepath}' not found.")
+#         return
+
+#     # --- Prepare Title & Norm ---
+#     title_text = get_clean_title(filepath)
+#     filename_lower = os.path.basename(filepath).lower()
+#     norm_label = r"$\ell_\infty$" if "norm_inf" in filename_lower else r"$\ell_2$"
+    
+#     # --- Define Styles ---
+#     # Added 'hybrid' and 'certificate_pi' with distinct colors/styles
+#     styles = {
+#         'aa':               {'label': 'Upper Bound (Empirical)', 'color': '#8B0000', 'style': '--', 'dashes': (5, 3), 'zorder': 10},
+#         'certificate':      {'label': 'CRA',                    'color': '#0072B2', 'style': '-',  'dashes': (),      'zorder': 5},
+#         'certificate_pi':   {'label': 'CRA (Power Iteration)',  'color': "#850BF8", 'style': ':',  'dashes': (1, 1),  'zorder': 6}, 
+#         'hybrid':           {'label': 'Hybrid Verification',    'color': '#E69F00', 'style': '-',  'dashes': (),      'zorder': 9}, # Orange
+#         'lirpa_alphacrown': {'label': r'$\alpha$-CROWN',        'color': '#009E73', 'style': '-.', 'dashes': (3, 1, 1, 1), 'zorder': 7},
+#         'lirpa_betacrown':  {'label': r'$\beta$-CROWN',         'color': "#DDDA0E", 'style': '--', 'dashes': (5, 5),  'zorder': 8},
+#         'sdp':              {'label': 'SDP',                    'color': '#CC79A7', 'style': ':',  'dashes': (1, 1),  'zorder': 4},
+#     }
+
+#     # --- Filtering Logic ---
+#     # We want to plot what is available in the dataframe, provided it's in our style map
+#     available_methods = [m for m in styles.keys() if m in df.columns]
+    
+#     # Exclusion Logic: Cleanup based on Norm type
+#     plot_methods = available_methods.copy()
+#     if 'norm_inf' in filename_lower:
+#         if 'sdp' in plot_methods: plot_methods.remove('sdp')
+#     else:
+#         if 'lirpa_betacrown' in plot_methods: plot_methods.remove('lirpa_betacrown')
+
+#     # --- Plotting ---
+#     fig, ax = plt.subplots(figsize=(10, 7))
+
+#     # 1. Dynamic Shading (Verification Gap)
+#     # We shade between the best of ALL certified methods and the AA empirical upper bound
+#     cert_cols = [m for m in plot_methods if m != 'aa']
+#     if 'aa' in df.columns and cert_cols:
+#         virtual_best = df[cert_cols].max(axis=1)
+#         ax.fill_between(
+#             df['epsilon'], 
+#             virtual_best, 
+#             df['aa'], 
+#             color='#D55E00', 
+#             alpha=0.10,      
+#             label='Verification Gap'
+#         )
+
+#     # 2. Draw Lines
+#     for method in plot_methods:
+#         s = styles[method]
+#         kwargs = {
+#             'label': s['label'],
+#             'color': s['color'],
+#             'linestyle': s['style'],
+#             'linewidth': 3.0 if method == 'hybrid' else 2.5, # Make hybrid slightly thicker
+#             'alpha': 0.9,
+#             'zorder': s['zorder']
+#         }
+#         if s['dashes']: kwargs['dashes'] = s['dashes']
+        
+#         ax.plot(df['epsilon'], df[method], **kwargs)
+
+#     # --- Final Polish ---
+#     full_title = f"{title_text} ({norm_label})"
+#     ax.set_title(full_title, pad=20, fontdict={'fontsize': 16, 'weight': 'bold'})
+#     ax.set_xlabel(f"Perturbation Radius ({norm_label})", fontsize=14, labelpad=10)
+#     ax.set_ylabel("Robust Accuracy (%)", fontsize=14, labelpad=10)
+    
+#     ax.set_ylim(-5, 105)
+#     ax.set_xlim(left=0, right=df['epsilon'].max())
+#     ax.grid(True, linestyle=':', alpha=0.6)
+    
+#     # Legend - UPPER RIGHT
+#     # Set facecolor to white to ensure it covers the grid lines
+#     ax.legend(loc='upper right', frameon=True, fancybox=False, 
+#               edgecolor='black', framealpha=1.0, fontsize=11)
+
+#     plt.tight_layout()
+#     plt.savefig(output_filename, dpi=300)
+#     plt.close() # Close to free memory during large sweeps
+#     print(f"✅ Saved updated plot to {output_filename}")
+
 def create_final_paper_plot(filepath, output_filename):
     """
-    Generates the final plot with:
-    - Expanded Title (Model + Dataset + GNP/Lip/Bjork).
-    - Legend in Upper Right.
-    - Distinct line styles.
+    Generates a clean plot featuring exactly 4 methods:
+    AA, CRA, CRA (PI), and Hybrid.
     """
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    import os
+
     # --- Load Data ---
     try:
         df = pd.read_csv(filepath)
@@ -566,41 +750,35 @@ def create_final_paper_plot(filepath, output_filename):
     filename_lower = os.path.basename(filepath).lower()
     norm_label = r"$\ell_\infty$" if "norm_inf" in filename_lower else r"$\ell_2$"
     
-    # --- Define Styles ---
-    # Use empty tuple () for solid lines to fix TypeError
+    # --- Define Strict Styles ---
     styles = {
         'aa':               {'label': 'Upper Bound (Empirical)', 'color': '#8B0000', 'style': '--', 'dashes': (5, 3), 'zorder': 10},
-        'certificate':      {'label': 'CRA',           'color': '#0072B2', 'style': '-',  'dashes': (),        'zorder': 5},
-        # 'certificate_pi':   {'label': 'CRA (Pi)',      'color': "#850BF8", 'style': '--', 'dashes': (3, 1),    'zorder': 5}, # Teal/Greenish
-        'lirpa_alphacrown': {'label': r'$\alpha$-CROWN', 'color': '#009E73', 'style': '-.', 'dashes': (3, 1, 1, 1), 'zorder': 6},
-        'lirpa_betacrown':  {'label': r'$\beta$-CROWN',  'color': "#DDDA0E", 'style': '--', 'dashes': (5, 5),    'zorder': 7},
-        'sdp':              {'label': 'SDP',           'color': '#CC79A7', 'style': ':',  'dashes': (1, 1),     'zorder': 4},
+        'certificate':      {'label': 'CRA',                    'color': '#0072B2', 'style': '-',  'dashes': (),      'zorder': 5},
+        'certificate_pi':   {'label': 'CRA (Power Iteration)',  'color': "#850BF8", 'style': ':',  'dashes': (1, 1),  'zorder': 6}, 
+        'hybrid':           {'label': 'Hybrid Verification',    'color': '#E69F00', 'style': '-',  'dashes': (),      'zorder': 9},
     }
 
+    # Only attempt to plot if the column exists in the CSV
     plot_methods = [m for m in styles.keys() if m in df.columns]
-    print(plot_methods)
-    # Exclusion Logic
-    if 'norm_inf' in filename_lower and 'sdp' in plot_methods: 
-        plot_methods.remove('sdp')
-    else:
-        # Assuming beta-crown is excluded for L2
-        plot_methods.remove('lirpa_betacrown')
-    print(plot_methods)
+
     # --- Plotting ---
     fig, ax = plt.subplots(figsize=(10, 7))
 
-    # 1. Dynamic Shading (Gap)
-    cert_cols = [m for m in plot_methods if m != 'aa']
-    if 'aa' in df.columns and cert_cols:
-        virtual_best = df[cert_cols].max(axis=1)
-        ax.fill_between(
-            df['epsilon'], 
-            virtual_best, 
-            df['aa'], 
-            color='#D55E00', 
-            alpha=0.10,      
-            label='Verification Gap'
-        )
+    # 1. Verification Gap Shading
+    # Shades between the best performing certified method and the empirical attack
+    if 'aa' in df.columns:
+        cert_cols = [m for m in plot_methods if m != 'aa']
+        if cert_cols:
+            virtual_best = df[cert_cols].max(axis=1)
+            ax.fill_between(
+                df['epsilon'], 
+                virtual_best, 
+                df['aa'], 
+                color='#D55E00', 
+                alpha=0.10,      
+                label='Verification Gap',
+                zorder=1
+            )
 
     # 2. Draw Lines
     for method in plot_methods:
@@ -609,31 +787,33 @@ def create_final_paper_plot(filepath, output_filename):
             'label': s['label'],
             'color': s['color'],
             'linestyle': s['style'],
-            'linewidth': 2.5,
-            'alpha': 0.85,
+            'linewidth': 3.2 if method == 'hybrid' else 2.5, # Emphasize Hybrid
+            'alpha': 0.9,
             'zorder': s['zorder']
         }
-        if s['dashes']: kwargs['dashes'] = s['dashes']
+        if s['dashes']: 
+            kwargs['dashes'] = s['dashes']
         
         ax.plot(df['epsilon'], df[method], **kwargs)
 
     # --- Final Polish ---
     full_title = f"{title_text} ({norm_label})"
-    ax.set_title(full_title, pad=20, weight='bold')
-    ax.set_xlabel(f"Perturbation Radius ({norm_label})", labelpad=10)
-    ax.set_ylabel("Robust Accuracy (%)", labelpad=10)
+    ax.set_title(full_title, pad=20, fontdict={'fontsize': 16, 'weight': 'bold'})
+    ax.set_xlabel(f"Perturbation Radius ({norm_label})", fontsize=14, labelpad=10)
+    ax.set_ylabel("Robust Accuracy (%)", fontsize=14, labelpad=10)
     
     ax.set_ylim(-5, 105)
     ax.set_xlim(left=0, right=df['epsilon'].max())
     ax.grid(True, linestyle=':', alpha=0.6)
     
-    # Legend - UPPER RIGHT
-    ax.legend(loc='upper right', frameon=True, fancybox=False, edgecolor='black', framealpha=1.0)
+    # Legend - Standard Upper Right positioning
+    ax.legend(loc='upper right', frameon=True, fancybox=False, 
+              edgecolor='black', framealpha=1.0, fontsize=11)
 
     plt.tight_layout()
     plt.savefig(output_filename, dpi=300)
-    print(f"✅ Saved updated plot to {output_filename}")
-
+    plt.close()
+    print(f"✅ Comparison plot saved to {output_filename}")
 # Example Usage
 # filename = "results_relu/new_experiment_vanilla_ConvSmall_MNIST_1_LIP_Bjork_mnist_tau_a250.0_T0.2_bs64_lr0.001_eps0.5_medium_1765204811_acc0.87_norm_2.csv"
 # create_distinct_paper_plot(filename, "final_plot_full_title.png")
@@ -1099,72 +1279,110 @@ from sdp_crown import verified_sdp_crown
 
 def compute_sdp_crown_vra(dataset, labels, model, radius, clean_output, device, classes, args, batch_size=1, return_robust_points=False, x_U=None, x_L=None, groupsort=False):
     return verified_sdp_crown(dataset, labels, model, radius, clean_output, device, classes, args, batch_size=1, return_robust_points=return_robust_points, x_U=x_U, x_L=x_L, groupsort=groupsort)
-# import boto3
-# import os
-# from botocore.exceptions import NoCredentialsError, ClientError
+    
+# Helper function to find the first leaf module
+    def starts_with_affine(model):
+        for module in model.modules():
+            # A leaf module has no children
+            if len(list(module.children())) == 0:
+                affine_types = (nn.Linear, nn.Conv1d, nn.Conv2d, nn.Conv3d)
+                return isinstance(module, affine_types)
+        return False # Fallback
 
-# def download_s3_folder(bucket_name="tdrobustbucket", s3_folder="lip_models", local_dir="./models"):
-#     """
-#     Downloads an S3 folder to a local directory.
-#     """
-#     s3 = boto3.client('s3')
 
-#     # Ensure the local directory exists
-#     if not os.path.exists(local_dir):
-#         os.makedirs(local_dir)
+def wrap_with_identity(suffix_model, z_k):
+    """
+    Prepends a frozen Identity layer to the suffix model to satisfy 
+    SDP-CROWN's structural requirement for an Affine -> ReLU sequence.
+    """
+    device = z_k.device
+    
+    if z_k.dim() == 4:
+        # Spatial tensor: (Batch, Channels, Height, Width)
+        channels = z_k.shape[1]
+        identity_layer = nn.Conv2d(channels, channels, kernel_size=1, bias=False)
+        # dirac_ initializes the Conv2d weights as a perfect identity matrix
+        torch.nn.init.dirac_(identity_layer.weight.data)
+        
+    elif z_k.dim() == 2:
+        # Flat tensor: (Batch, Features)
+        features = z_k.shape[1]
+        identity_layer = nn.Linear(features, features, bias=False)
+        # eye creates a perfect 2D identity matrix
+        identity_layer.weight.data = torch.eye(features)
+        
+    else:
+        raise ValueError(f"Unsupported z_k dimensions for identity wrapper: {z_k.dim()}")
+        
+    # Freeze the layer entirely
+    identity_layer.weight.requires_grad = False
+    identity_layer.eval()
+    identity_layer.to(device)
+    
+    # Prepend to the existing suffix
+    return nn.Sequential(identity_layer, suffix_model)
 
-#     # Handle pagination in case there are many models
-#     paginator = s3.get_paginator('list_objects_v2')
-#     pages = paginator.paginate(Bucket=bucket_name, Prefix=s3_folder)
+def compute_hybrid_vra(images, targets, model, eps_rescaled, clean_indices, device, classes, args, L_prefix=1.0, sdp=True):
+    """
+    Splits the model into a 1-Lipschitz prefix and standard suffix,
+    then runs CROWN-based verification on the intermediate activations.
+    Scales the intermediate epsilon using the provided L_prefix.
+    """
+    import time
+    start_time = time.time()
+    
+    try:
+        from deel import torchlip
+    except ImportError:
+        print("Warning: deel.torchlip not found. Hybrid splitting might fail if using torchlip layers.")
+        import torch.nn as torchlip # fallback
+        
+    all_layers = list(model.children())
+    split_idx = args.split_index
+    
+    if split_idx <= 0 or split_idx >= len(all_layers):
+        raise ValueError(f"Invalid split_index: {split_idx}")
 
-#     print(f"--- Starting sync from s3://{bucket_name}/{s3_folder} to {local_dir} ---")
+    # Split the model
+    f1_prefix = torchlip.Sequential(*all_layers[:split_idx]).to(device).eval()
+    f2_suffix_lip = torchlip.Sequential(*all_layers[split_idx:]).to(device).eval()
+    
+    # Convert suffix for LiRPA (assuming vanilla_export is in project_utils)
+    try:
+        f2_suffix_vanilla = vanilla_export(f2_suffix_lip).to(device).eval()
+    except NameError:
+        print("Warning: vanilla_export not found. Passing raw suffix.")
+        f2_suffix_vanilla = f2_suffix_lip
 
-#     download_count = 0
+    # Scale the epsilon for the intermediate layer propagation using the passed L_prefix
+    intermediate_epsilon = float(eps_rescaled * L_prefix)
+    # print(f" -> Input Eps: {eps_rescaled:.4f} => Intermediate Eps (L_prefix={L_prefix:.4f}): {intermediate_epsilon:.4f}")
 
-#     try:
-#         for page in pages:
-#             # Check if the folder is empty
-#             if 'Contents' not in page:
-#                 continue
+    # Step 1: Lossless L2 propagation through prefix
+    with torch.no_grad():
+        z_k = f1_prefix(images.to(device))
 
-#             for obj in page['Contents']:
-#                 s3_key = obj['Key']
-                
-#                 # Skip directory markers (keys ending in /)
-#                 if s3_key.endswith('/'):
-#                     continue
+    # Step 2: Suffix Verification
+    if str(args.norm) == 'inf':
+        # Hybrid L-inf (Alpha-CROWN)
+        vra, t_v, idx_robust = compute_alphacrown_vra_and_time(
+            z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args, # <-- Scaled EPS
+            batch_size=args.batch_size, norm=args.norm, x_U=None, x_L=None, return_robust_points=True
+        )
+    else:
+        if sdp:
+            # Hybrid L2 (SDP-CROWN)
+            groupsort = "GNP" in args.model or "Bjork" in args.model
+            # import pdb; pdb.set_trace()
+            vra, t_v, idx_robust = compute_sdp_crown_vra(
+                z_k, targets, f2_suffix_vanilla, float(intermediate_epsilon), clean_indices, # <-- Scaled EPS
+                device, classes, args, batch_size=1, return_robust_points=True, x_U=None, x_L=None, groupsort=groupsort
+            )
+        else:
+            hybrid_vra, time_hybrid, robust_idxs_hybrid = compute_alphacrown_vra_and_time(
+            z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args, # Scaled EPS
+            batch_size=args.batch_size, norm=2, x_U=None, x_L=None, return_robust_points=True
+        )
 
-#                 # Remove the 'lip_models/' prefix to map correctly to './models/'
-#                 # e.g., 'lip_models/model.pth' becomes 'model.pth'
-#                 relative_path = os.path.relpath(s3_key, s3_folder)
-#                 local_file_path = os.path.join(local_dir, relative_path)
-
-#                 # Create local subdirectories if they exist in S3 structure
-#                 local_file_dir = os.path.dirname(local_file_path)
-#                 if not os.path.exists(local_file_dir):
-#                     os.makedirs(local_file_dir)
-
-#                 # Download
-#                 print(f"Downloading: {s3_key} -> {local_file_path}")
-#                 s3.download_file(bucket_name, s3_key, local_file_path)
-#                 download_count += 1
-
-#         if download_count == 0:
-#             print("No files found in the specified S3 folder.")
-#         else:
-#             print(f"\nSuccess! {download_count} files downloaded.")
-
-#     except NoCredentialsError:
-#         print("Error: AWS credentials not found. Please run 'aws configure'.")
-#     except ClientError as e:
-#         print(f"AWS Client Error: {e}")
-#     except Exception as e:
-#         print(f"Unexpected Error: {e}")
-
-# if __name__ == "__main__":
-#     # --- Configuration matches your training script ---
-#     BUCKET_NAME = "tdrobustbucket"
-#     S3_FOLDER = "lip_models" 
-#     LOCAL_DIRECTORY = "./models" 
-
-#     download_s3_folder(BUCKET_NAME, S3_FOLDER, LOCAL_DIRECTORY)
+    total_time = time.time() - start_time
+    return vra, total_time, idx_robust

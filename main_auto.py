@@ -142,12 +142,14 @@ def main():
     parser.add_argument('--dataset', type=str, required=True, choices=['cifar10', 'mnist'])
     parser.add_argument('--batch_size', type=int, default=2)
     parser.add_argument('--output_csv', type=str, default='results/study.csv')
-    parser.add_argument('--num_points', type=int, default=30, help='Points to sample in linear paving')
+    parser.add_argument('--num_points', type=int, default=15, help='Points to sample in linear paving')
     parser.add_argument('--start', default=0, type=int, help='start index for the dataset')
     parser.add_argument('--end', default=200, type=int, help='end index for the dataset')
     parser.add_argument('--lr_alpha', default=0.5, type=float, help='alpha learning rate')
     parser.add_argument('--lr_lambda', default=0.05, type=float, help='lambda learning rate')
     parser.add_argument('--high_tau', default=False, type=bool, help='Training temperature high/low')
+    parser.add_argument('--split_index', default=-1, type=int, help='Layer index to split the model for Hybrid verification. -1 disables hybrid.')
+    parser.add_argument('--sdp', default=True, type=bool, help='If true, sdp verification used for hybrid')
     args = parser.parse_args()
 
     # --- 1. SET ENVIRONMENT TO REDUCE FRAGMENTATION ---
@@ -189,7 +191,6 @@ def main():
         inp_shape = (1, 1, 28, 28)
     else:
         inp_shape = (1, 3, 32, 32)
-
     try:
         L_2_empirical = compute_model_lipschitz(model, input_shape=inp_shape, device=device)
         L_PI = convert_lipschitz_constant(L_2_empirical, str(args.norm), images[0].numel())
@@ -197,6 +198,21 @@ def main():
     except Exception as e:
         print(f"Warning: PI failed ({e}). Using Theoretical L.")
         L_PI = L
+    
+    # --- 3. PREFIX LIPSCHITZ CONSTANT (For Hybrid) ---
+    L_prefix_PI = 1.0
+    if args.split_index > 0:
+        try:
+            from deel import torchlip
+            all_layers = list(model.children())
+            f1_prefix_temp = torchlip.Sequential(*all_layers[:args.split_index]).to(device).eval()
+            L_prefix_empirical = compute_model_lipschitz(f1_prefix_temp, input_shape=inp_shape, device=device)
+            # We don't convert to norm here because the intermediate space is L2
+            L_prefix_PI = L_prefix_empirical 
+            print(f"Power Iteration Prefix L (L_prefix_PI): {L_prefix_PI:.4f}")
+            del f1_prefix_temp # Free memory
+        except Exception as e:
+            print(f"Warning: Prefix PI failed ({e}). Defaulting L_prefix_PI to 1.0")
 
     # Phase 1: Find Baseline Boundary using CRA
     cra_boundary = find_max_epsilon_binary_CRA(images, model, clean_indices, args, L)
@@ -217,8 +233,9 @@ def main():
         "aa": True, 
         "cra": True, 
         "cra_pi": True, 
-        "alphacrown": True, 
-        "heavy_certified": True 
+        "alphacrown": False, 
+        "heavy_certified": False,
+        "hybrid": True 
     }
 
     print(f"\n[Phase 2] Paving Range [0, {paving_max:.4f}]")
@@ -346,7 +363,15 @@ def main():
                     else:
                         groupsort = False
 
-                    
+                    # --- NEW FIX: Dynamically Inject Identity Layer ---
+                    if not starts_with_affine(f2_suffix_vanilla):
+                        # print("Suffix starts with an activation. Injecting Identity layer for SDP-CROWN...")
+                        f2_suffix_sdp = wrap_with_identity(f2_suffix_vanilla, z_k)
+                    else:
+                        # print("Suffix starts with an affine layer. No wrapper needed.")
+                        f2_suffix_sdp = f2_suffix_vanilla
+                    # --------------------------------------------------
+
                     v_acc, t_v, idx_sdp = compute_sdp_crown_vra(
                         images, targets, model, float(eps_rescaled), clean_indices, 
                         device, classes, args, batch_size=1, return_robust_points=True, x_U=x_U, x_L=x_L, groupsort=groupsort
@@ -377,6 +402,37 @@ def main():
         else:
             result_dict['lirpa_betacrown'] = 0.0; result_dict['time_lirpa_beta'] = 0.0
             result_dict['sdp'] = 0.0; result_dict['time_sdp'] = 0.0
+        # --- HYBRID VERIFICATION ---
+        if solvers["hybrid"] and args.split_index > 0:
+            torch.cuda.empty_cache()
+            gc.collect()
+            
+            try:
+                # Add L_prefix_PI as the last argument
+                h_acc, t_h, idx_hybrid = compute_hybrid_vra(
+                    images, targets, model, eps_rescaled, clean_indices, device, classes, args, L_prefix=L_prefix_PI, sdp=args.sdp
+                )
+                
+                result_dict['hybrid'], result_dict['time_hybrid'] = h_acc, t_h
+                registry.register(eps, "hybrid", idx_hybrid)
+                certified_indices_union.update(idx_hybrid.cpu().tolist())
+                print(f"    [Hybrid Split@{args.split_index}] Acc: {h_acc:.2f}%")
+                
+                if h_acc <= 0: solvers["hybrid"] = False
+                
+            except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                if "out of memory" in str(e).lower():
+                    print(f"    ❌ [Hybrid] OOM at eps={eps:.5f}. Skipping.")
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    result_dict['hybrid'] = -1.0
+                    result_dict['time_hybrid'] = 0.0
+                    oom_occurred = True
+                else:
+                    raise e
+        else:
+            result_dict['hybrid'] = 0.0
+            result_dict['time_hybrid'] = 0.0
 
         # --- Final ---
         total_samples = images.shape[0]
