@@ -728,6 +728,102 @@ def get_clean_title(filename):
 #     plt.savefig(output_filename, dpi=300)
 #     plt.close() # Close to free memory during large sweeps
 #     print(f"✅ Saved updated plot to {output_filename}")
+def create_final_paper_plot_PI(filepath, output_filename):
+    """
+    Generates the final plot including CRA, AA, CRA-PI, and CROWN/SDP methods.
+    """
+    
+    # Set global academic font
+    plt.rcParams['font.family'] = 'serif'
+
+    # --- Load Data ---
+    try:
+        df = pd.read_csv(filepath)
+    except FileNotFoundError:
+        print(f"❌ Error: File '{filepath}' not found.")
+        return
+
+    # --- Prepare Title & Norm ---
+    # NOTE: You will need to ensure `get_clean_title` is defined in your script
+    try:
+        title_text = get_clean_title(filepath)
+    except NameError:
+        title_text = os.path.basename(filepath).split('.')[0].replace('_', ' ').title()
+        
+    filename_lower = os.path.basename(filepath).lower()
+    norm_label = r"$\ell_\infty$" if "norm_inf" in filename_lower else r"$\ell_2$"
+    
+    # --- Define Styles ---
+    # Added 'certificate_pi' with distinct color/style
+    styles = {
+        'aa':               {'label': 'Upper Bound (Empirical)', 'color': '#8B0000', 'style': '--', 'dashes': (5, 3), 'zorder': 10},
+        'certificate':      {'label': 'CRA',                    'color': '#0072B2', 'style': '-',  'dashes': (),      'zorder': 5},
+        'certificate_pi':   {'label': 'CRA (PI)',               'color': "#850BF8", 'style': ':',  'dashes': (1, 1),  'zorder': 6}, 
+        # 'hybrid':           {'label': 'Hybrid Verification',    'color': '#E69F00', 'style': '-',  'dashes': (),      'zorder': 9},
+        'lirpa_alphacrown': {'label': r'$\alpha$-CROWN',        'color': '#009E73', 'style': '-.', 'dashes': (3, 1, 1, 1), 'zorder': 7},
+        'lirpa_betacrown':  {'label': r'$\beta$-CROWN',         'color': "#DDDA0E", 'style': '--', 'dashes': (5, 5),  'zorder': 8},
+        'sdp':              {'label': 'SDP',                    'color': '#CC79A7', 'style': ':',  'dashes': (1, 1),  'zorder': 4},
+    }
+
+    # --- Filtering Logic ---
+    available_methods = [m for m in styles.keys() if m in df.columns]
+    
+    # Exclusion Logic: Cleanup based on Norm type
+    plot_methods = available_methods.copy()
+    if 'norm_inf' in filename_lower:
+        if 'sdp' in plot_methods: plot_methods.remove('sdp')
+    else:
+        if 'lirpa_betacrown' in plot_methods: plot_methods.remove('lirpa_betacrown')
+
+    # --- Plotting ---
+    fig, ax = plt.subplots(figsize=(10, 7))
+
+    # 1. Dynamic Shading (Verification Gap)
+    cert_cols = [m for m in plot_methods if m != 'aa']
+    if 'aa' in df.columns and cert_cols:
+        virtual_best = df[cert_cols].max(axis=1)
+        ax.fill_between(
+            df['epsilon'], 
+            virtual_best, 
+            df['aa'], 
+            color='#D55E00', 
+            alpha=0.10,      
+            label='Verification Gap'
+        )
+
+    # 2. Draw Lines
+    for method in plot_methods:
+        s = styles[method]
+        kwargs = {
+            'label': s['label'],
+            'color': s['color'],
+            'linestyle': s['style'],
+            'linewidth': 3.0 if method == 'hybrid' else 2.5,
+            'alpha': 0.9,
+            'zorder': s['zorder']
+        }
+        if s['dashes']: kwargs['dashes'] = s['dashes']
+        
+        ax.plot(df['epsilon'], df[method], **kwargs)
+
+    # --- Final Polish ---
+    full_title = f"{title_text} ({norm_label})"
+    ax.set_title(full_title, pad=20, fontdict={'fontsize': 16, 'weight': 'bold'})
+    ax.set_xlabel(f"Perturbation Radius ({norm_label})", fontsize=14, labelpad=10)
+    ax.set_ylabel("Robust Accuracy (%)", fontsize=14, labelpad=10)
+    
+    ax.set_ylim(-5, 105)
+    ax.set_xlim(left=0, right=df['epsilon'].max())
+    ax.grid(True, linestyle=':', alpha=0.6)
+    
+    # Legend - UPPER RIGHT
+    ax.legend(loc='upper right', frameon=True, fancybox=False, 
+              edgecolor='black', framealpha=1.0, fontsize=11)
+
+    plt.tight_layout()
+    plt.savefig(output_filename, dpi=300)
+    plt.close() 
+    print(f"✅ Saved updated plot to {output_filename}")
 
 def create_final_paper_plot(filepath, output_filename):
     """
@@ -1281,13 +1377,13 @@ def compute_sdp_crown_vra(dataset, labels, model, radius, clean_output, device, 
     return verified_sdp_crown(dataset, labels, model, radius, clean_output, device, classes, args, batch_size=1, return_robust_points=return_robust_points, x_U=x_U, x_L=x_L, groupsort=groupsort)
     
 # Helper function to find the first leaf module
-    def starts_with_affine(model):
-        for module in model.modules():
+def starts_with_affine(model):
+    for module in model.modules():
             # A leaf module has no children
-            if len(list(module.children())) == 0:
-                affine_types = (nn.Linear, nn.Conv1d, nn.Conv2d, nn.Conv3d)
-                return isinstance(module, affine_types)
-        return False # Fallback
+        if len(list(module.children())) == 0:
+            affine_types = (nn.Linear, nn.Conv1d, nn.Conv2d, nn.Conv3d)
+            return isinstance(module, affine_types)
+    return False # Fallback
 
 
 def wrap_with_identity(suffix_model, z_k):
@@ -1354,8 +1450,15 @@ def compute_hybrid_vra(images, targets, model, eps_rescaled, clean_indices, devi
         print("Warning: vanilla_export not found. Passing raw suffix.")
         f2_suffix_vanilla = f2_suffix_lip
 
+    if str(args.norm) == 'inf':
+        # Apply algebraic penalty ONCE to convert spec to backbone geometry
+        input_dim = images[0].numel()
+        eps_backbone = eps_rescaled * np.sqrt(input_dim) 
+    else:
+        eps_backbone = eps_rescaled
+
     # Scale the epsilon for the intermediate layer propagation using the passed L_prefix
-    intermediate_epsilon = float(eps_rescaled * L_prefix)
+    intermediate_epsilon = float(eps_backbone * L_prefix)
     # print(f" -> Input Eps: {eps_rescaled:.4f} => Intermediate Eps (L_prefix={L_prefix:.4f}): {intermediate_epsilon:.4f}")
 
     # Step 1: Lossless L2 propagation through prefix
@@ -1363,19 +1466,42 @@ def compute_hybrid_vra(images, targets, model, eps_rescaled, clean_indices, devi
         z_k = f1_prefix(images.to(device))
 
     # Step 2: Suffix Verification
+    # --- PHASE 2: Symbolic Verification (Head) ---
     if str(args.norm) == 'inf':
-        # Hybrid L-inf (Alpha-CROWN)
-        vra, t_v, idx_robust = compute_alphacrown_vra_and_time(
-            z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args, # <-- Scaled EPS
-            batch_size=args.batch_size, norm=args.norm, x_U=None, x_L=None, return_robust_points=True
-        )
+        if sdp:
+            # STRATEGY 1: Enclosing Ball (Coupled L2 Handover)
+            # Pass the latent L2 ball radius directly to SDP-CROWN
+            if not starts_with_affine(f2_suffix_vanilla):
+                f2_suffix_sdp = wrap_with_identity(f2_suffix_vanilla, z_k)
+            else:
+                f2_suffix_sdp = f2_suffix_vanilla
+                
+            vra, t_v, idx_robust = compute_sdp_crown_vra(
+                z_k, targets, f2_suffix_sdp, intermediate_epsilon, clean_indices, 
+                device, classes, args, batch_size=1, return_robust_points=True
+            )
+        else:
+            # STRATEGY 2: Norm Conversion (L-inf Box Handover)
+            # Alpha-CROWN will treat intermediate_epsilon as the radius of an L-inf box 
+            vra, t_v, idx_robust = compute_alphacrown_vra_and_time(
+                z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args, 
+                batch_size=args.batch_size, norm='inf', return_robust_points=True
+            )
     else:
         if sdp:
             # Hybrid L2 (SDP-CROWN)
             groupsort = "GNP" in args.model or "Bjork" in args.model
             # import pdb; pdb.set_trace()
+            # --- NEW FIX: Dynamically Inject Identity Layer ---
+            if not starts_with_affine(f2_suffix_vanilla):
+                # print("Suffix starts with an activation. Injecting Identity layer for SDP-CROWN...")
+                f2_suffix_sdp = wrap_with_identity(f2_suffix_vanilla, z_k)
+            else:
+                # print("Suffix starts with an affine layer. No wrapper needed.")
+                f2_suffix_sdp = f2_suffix_vanilla
+            # --------------------------------------------------
             vra, t_v, idx_robust = compute_sdp_crown_vra(
-                z_k, targets, f2_suffix_vanilla, float(intermediate_epsilon), clean_indices, # <-- Scaled EPS
+                z_k, targets, f2_suffix_sdp, float(intermediate_epsilon), clean_indices, # <-- Scaled EPS
                 device, classes, args, batch_size=1, return_robust_points=True, x_U=None, x_L=None, groupsort=groupsort
             )
         else:

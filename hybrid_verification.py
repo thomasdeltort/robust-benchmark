@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+
+# python hybrid_verification.py --model_path /home/aws_install/robust-benchmark/models/vanilla_VGG13_1_LIP_Bjork_CIFAR10_cifar10_tau_a250.0_T100.0_bs128_lr0.001_1771859356_acc0.86.pth --model "VGG13_1_LIP_Bjork_CIFAR10" --dataset cifar10 --epsilon 0.01 --split_index 3  --batch_size 1
 """
 Hybrid Robustness Verification Script
 Combines 1-Lipschitz (L2) prefix verification with LIRPA/CROWN suffix verification,
@@ -22,11 +24,8 @@ except ImportError:
     print("Warning: Could not import 'deel.torchlip'.")
 
 # --- Model Imports (from your local files) ---
-try:
-    from models import *
-    from project_utils import *
-except ImportError:
-    print("Warning: Ensure 'models.py' and 'project_utils.py' are in your path.")
+from models import *
+from project_utils import *
 
 
 def run_hybrid_verification(args, model_zoo):
@@ -161,34 +160,33 @@ def run_hybrid_verification(args, model_zoo):
             batch_size=args.batch_size, norm='inf', x_U=None, x_L=None, return_robust_points=True
         )
     else:
-    #     print("Mode: Hybrid L2")
-    #     # groupsort = "GNP" in args.model or "Bjork" in args.model
-    #     # print("SDP")
-    #     # hybrid_vra, time_hybrid, robust_idxs_hybrid = compute_sdp_crown_vra(
-    #     #     z_k, targets, f2_suffix_vanilla, float(intermediate_epsilon), clean_indices, 
-    #     #     device, classes, args, batch_size=1, return_robust_points=True, x_U=None, x_L=None, groupsort=groupsort
-    #     # )
-    #     print("ALPHA")
-    #     hybrid_vra, time_hybrid, robust_idxs_hybrid = compute_alphacrown_vra_and_time(
-    #         z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args, # Scaled EPS
-    #         batch_size=args.batch_size, norm=2, x_U=None, x_L=None, return_robust_points=True
-    #     )
-    # print(f"Hybrid Result: {hybrid_vra:.2f}% | Time: {time_hybrid:.4f}s")
         print(f"\n[Hybrid L2 Challenge] Running Alpha-CROWN vs SDP-CROWN")
-        groupsort = "GNP" in args.model or "Bjork" in args.model
-
-        # 1. Run SDP-CROWN
-        print(" -> Executing SDP-CROWN...")
-        vra_sdp, t_sdp, idx_sdp = compute_sdp_crown_vra(
-            z_k, targets, f2_suffix_vanilla, float(intermediate_epsilon), clean_indices, 
-            device, classes, args, batch_size=1, return_robust_points=True, x_U=None, x_L=None, groupsort=groupsort
-        )
-
         # 2. Run Alpha-CROWN
         print(" -> Executing Alpha-CROWN...")
         vra_alpha, t_alpha, idx_alpha = compute_alphacrown_vra_and_time(
             z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args,
             batch_size=args.batch_size, norm=2, x_U=None, x_L=None, return_robust_points=True
+        )
+
+        if "GNP" in args.model or "Bjork" in args.model:
+            groupsort = True
+        else:
+            groupsort = False
+
+        # --- NEW FIX: Dynamically Inject Identity Layer ---
+        if not starts_with_affine(f2_suffix_vanilla):
+            # print("Suffix starts with an activation. Injecting Identity layer for SDP-CROWN...")
+            f2_suffix_sdp = wrap_with_identity(f2_suffix_vanilla, z_k)
+        else:
+            # print("Suffix starts with an affine layer. No wrapper needed.")
+            f2_suffix_sdp = f2_suffix_vanilla
+        # --------------------------------------------------
+
+        # 1. Run SDP-CROWN
+        print(" -> Executing SDP-CROWN...")
+        vra_sdp, t_sdp, idx_sdp = compute_sdp_crown_vra(
+            z_k, targets, f2_suffix_sdp, float(intermediate_epsilon), clean_indices, 
+            device, classes, args, batch_size=1, return_robust_points=True, x_U=None, x_L=None, groupsort=groupsort
         )
 
         # 3. SET COMPARISON LOGIC
@@ -357,7 +355,7 @@ if __name__ == '__main__':
     parser.add_argument('--norm', type=str, default='2', choices=['2', 'inf'],
                         help="Propagation norm for the suffix. '2' for lossless L2, 'inf' for lossy L-inf hand-off. (Default: 2)")
     
-    parser.add_argument('--batch_size', type=int, default=256, help='Batch size for verification. Default: 256.')
+    parser.add_argument('--batch_size', type=int, default=1, help='Batch size for verification. Default: 256.')
     parser.add_argument('--start', default=0, type=int, help='start index for the dataset')
     parser.add_argument('--end', default=200, type=int, help='end index for the dataset')
 

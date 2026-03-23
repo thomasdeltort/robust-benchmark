@@ -217,10 +217,14 @@ def main():
     # Phase 1: Find Baseline Boundary using CRA
     cra_boundary = find_max_epsilon_binary_CRA(images, model, clean_indices, args, L)
     if args.high_tau:
+        # if args.norm == 'inf':
+        #     paving_max = cra_boundary * 3.5
+        # else:
+        #     paving_max = cra_boundary * 3
         if args.norm == 'inf':
-            paving_max = cra_boundary * 3.5
+            paving_max = cra_boundary * 1.5
         else:
-            paving_max = cra_boundary * 3
+            paving_max = cra_boundary * 1.2
     else:
         if args.norm == 'inf':
             paving_max = cra_boundary * 1.5
@@ -241,7 +245,7 @@ def main():
     print(f"\n[Phase 2] Paving Range [0, {paving_max:.4f}]")
     print("        Stopping when Best Certified (Union) reaches 0%.")
 
-    for eps in epsilon_range[1:]:
+    for eps in epsilon_range[1:8]:
         print(f"\n--- EVALUATING EPSILON: {eps:.5f} ---")
         
         # --- Pre-iteration Cleanup ---
@@ -362,15 +366,6 @@ def main():
                         groupsort = True
                     else:
                         groupsort = False
-
-                    # --- NEW FIX: Dynamically Inject Identity Layer ---
-                    if not starts_with_affine(f2_suffix_vanilla):
-                        # print("Suffix starts with an activation. Injecting Identity layer for SDP-CROWN...")
-                        f2_suffix_sdp = wrap_with_identity(f2_suffix_vanilla, z_k)
-                    else:
-                        # print("Suffix starts with an affine layer. No wrapper needed.")
-                        f2_suffix_sdp = f2_suffix_vanilla
-                    # --------------------------------------------------
 
                     v_acc, t_v, idx_sdp = compute_sdp_crown_vra(
                         images, targets, model, float(eps_rescaled), clean_indices, 

@@ -95,21 +95,21 @@ class GroupSort_General(nn.Module):
         return output
     
     
-class GroupSort2Optimized(nn.Module):
-    # THIS IMPLEMENTATION IS NOT VERIFIABLE WITH auto_LiRPA
-    # due to torch.max(a, b)
-    def __init__(self):
-        super(GroupSort2Optimized, self).__init__()
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        N, C, H, W = x.shape
-        x_reshaped = x.view(N, C // 2, 2, H, W)
-        x1s = x_reshaped[:, :, 0, :, :]
-        x2s = x_reshaped[:, :, 1, :, :]
-        # Max + Sum Preservation Logic
-        y2_max = torch.max(x1s, x2s)
-        y1_min = (x1s + x2s) - y2_max
-        sorted_pairs = torch.stack((y1_min, y2_max), dim=2)
-        return sorted_pairs.view(N, C, H, W)
+# class GroupSort2Optimized(nn.Module):
+#     # THIS IMPLEMENTATION IS NOT VERIFIABLE WITH auto_LiRPA
+#     # due to torch.max(a, b)
+#     def __init__(self):
+#         super(GroupSort2Optimized, self).__init__()
+#     def forward(self, x: torch.Tensor) -> torch.Tensor:
+#         N, C, H, W = x.shape
+#         x_reshaped = x.view(N, C // 2, 2, H, W)
+#         x1s = x_reshaped[:, :, 0, :, :]
+#         x2s = x_reshaped[:, :, 1, :, :]
+#         # Max + Sum Preservation Logic
+#         y2_max = torch.max(x1s, x2s)
+#         y1_min = (x1s + x2s) - y2_max
+#         sorted_pairs = torch.stack((y1_min, y2_max), dim=2)
+#         return sorted_pairs.view(N, C, H, W)
 
     
 
@@ -1382,3 +1382,4 @@ def VGG19_1_LIP_Bjork_CIFAR10():
         torchlip.SpectralLinear(512, 10)
     )
     return model
+
