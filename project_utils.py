@@ -125,12 +125,79 @@ def load_mnist(batch_size):
     train_loader = torch.utils.data.DataLoader(train_set, batch_size, shuffle=True)
     test_loader = torch.utils.data.DataLoader(test_set, batch_size)
     return train_loader, test_loader
+    
+def load_imagenette(batch_size, aug_level='medium'):
+    """
+    Args:
+        batch_size (int): Size of the batch.
+        aug_level (str): Level of augmentation ('none', 'light', 'medium', 'heavy').
+    """
+    # 1. Resolve Data Directory (Jean Zay $WORK or local ./data/)
+    data_dir = os.path.join(os.environ.get('WORK', './data'), 'imagenette2-320')
+    if not os.path.exists(data_dir):
+        raise FileNotFoundError(f"Imagenette dataset not found at {data_dir}. Please download it first.")
+
+    # 2. Define Common Base and Normalization (Standard ImageNet properties)
+    mean = [0.485, 0.456, 0.406]
+    std = [0.225, 0.225, 0.225]
+    
+    base_transforms = [
+        v2.ToImage(),
+        v2.ToDtype(torch.float32, scale=True),
+    ]
+    norm_transform = v2.Normalize(mean=mean, std=std)
+
+    # 3. Select Augmentation Strategy (Adapted for 224x224 resolution)
+    augmentations = []
+    
+    if aug_level == 'none':
+        augmentations = [v2.Resize(256), v2.CenterCrop(224)]
+        
+    elif aug_level == 'light':
+        augmentations = [
+            v2.RandomResizedCrop(224),
+            v2.RandomHorizontalFlip(p=0.5)
+        ]
+        
+    elif aug_level == 'medium':
+        augmentations = [
+            v2.RandomResizedCrop(224),
+            v2.RandomHorizontalFlip(p=0.5),
+            v2.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
+            v2.RandomAffine(degrees=5, translate=(0.05, 0.05))
+        ]
+        
+    elif aug_level == 'heavy':
+        augmentations = [
+            v2.RandomResizedCrop(224),
+            v2.RandAugment(num_ops=2, magnitude=9),
+            v2.RandomHorizontalFlip(), 
+            v2.RandomErasing(p=0.25, scale=(0.02, 0.1), ratio=(0.3, 3.3), value='random')
+        ]
+    else:
+        raise ValueError(f"Invalid aug_level: {aug_level}.")
+
+    # 4. Compose Transforms
+    train_transforms = v2.Compose(augmentations + base_transforms + [norm_transform])
+    test_transforms = v2.Compose([v2.Resize(256), v2.CenterCrop(224)] + base_transforms + [norm_transform])
+
+    # 5. Load Datasets
+    train_dataset = datasets.ImageFolder(os.path.join(data_dir, 'train'), transform=train_transforms)
+    test_dataset = datasets.ImageFolder(os.path.join(data_dir, 'val'), transform=test_transforms)
+
+    # 6. Create Loaders
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+
+    return train_loader, test_loader
 
 def load_dataset(name, batch_size, aug_level = 'medium'):
     if name=="mnist":
         train_loader, test_loader = load_mnist(batch_size)
     elif name=="cifar10":
         train_loader, test_loader = load_cifar10(batch_size, aug_level)
+    elif name=="imagenette":
+        train_loader, test_loader = load_imagenette(batch_size, aug_level)
     else :
         raise ValueError(f"Unexpected dataset: {name}")
     return train_loader, test_loader
@@ -159,20 +226,48 @@ def load_dataset_benchmark(args):
         labels = np.load('./prepared_data/mnist/y_sdp.npy')
         dataset = torch.from_numpy(dataset).permute(0,3,1,2)
         labels = torch.from_numpy(labels)
-        range = args.radius
+        range_val = args.radius
         classes = 10
+        
     elif "cifar10" in args.dataset.lower():
         dataset = np.load('./prepared_data/cifar/X_sdp.npy')
         labels = np.load('./prepared_data/cifar/y_sdp.npy')
         dataset = preprocess_cifar(dataset)
         dataset = torch.from_numpy(dataset).permute(0,3,1,2)
-        print(dataset.shape, "we need to verify channel first")
         labels = torch.from_numpy(labels)
-        range = args.radius/0.225
+        range_val = args.radius / 0.225
         classes = 10
+        
+    elif "imagenette" in args.dataset.lower():
+        # Load validation set directly from raw folders into memory
+        data_dir = os.path.join(os.environ.get('WORK', './data'), 'imagenette2-320', 'val')
+        
+        mean = [0.485, 0.456, 0.406]
+        std = [0.229, 0.224, 0.225]
+        
+        test_transforms = v2.Compose([
+            v2.Resize(256),
+            v2.CenterCrop(224),
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize(mean=mean, std=std)
+        ])
+        
+        val_dataset = datasets.ImageFolder(data_dir, transform=test_transforms)
+        
+        # Load the whole dataset into one batch for verification 
+        # (Imagenette val set is ~3.9k images, takes ~2.3GB of RAM)
+        loader = DataLoader(val_dataset, batch_size=len(val_dataset), shuffle=False)
+        dataset, labels = next(iter(loader))
+        
+        # Scale the epsilon range based on the minimum standard deviation of the dataset
+        range_val = args.radius / min(std)
+        classes = 10
+        
     else:
-        raise ValueError(f"Unexpected model: {args.model}")
-    return dataset, labels, range, classes
+        raise ValueError(f"Unexpected dataset: {args.dataset}")
+        
+    return dataset, labels, range_val, classes
 
 def load_dataset_benchmark_auto(args):
     if "mnist" in args.dataset.lower():
@@ -181,16 +276,34 @@ def load_dataset_benchmark_auto(args):
         dataset = torch.from_numpy(dataset).permute(0,3,1,2)
         labels = torch.from_numpy(labels)
         classes = 10
+        
     elif "cifar10" in args.dataset.lower():
         dataset = np.load('./prepared_data/cifar/X_sdp.npy')
         labels = np.load('./prepared_data/cifar/y_sdp.npy')
         dataset = preprocess_cifar(dataset)
         dataset = torch.from_numpy(dataset).permute(0,3,1,2)
-        print(dataset.shape, "we need to verify channel first")
         labels = torch.from_numpy(labels)
         classes = 10
+        
+    elif "imagenette" in args.dataset.lower():
+        data_dir = os.path.join(os.environ.get('WORK', './data'), 'imagenette2-320', 'val')
+        
+        test_transforms = v2.Compose([
+            v2.Resize(256),
+            v2.CenterCrop(224),
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.225, 0.225, 0.225])
+        ])
+        
+        val_dataset = datasets.ImageFolder(data_dir, transform=test_transforms)
+        loader = DataLoader(val_dataset, batch_size=len(val_dataset), shuffle=False)
+        dataset, labels = next(iter(loader))
+        classes = 10
+        
     else:
-        raise ValueError(f"Unexpected model: {args.model}")
+        raise ValueError(f"Unexpected dataset: {args.dataset}")
+        
     return dataset, labels, classes
 
 
@@ -1039,9 +1152,15 @@ def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indic
         raise ValueError(f"Unsupported norm: '{norm}'. Please use '2' or 'inf'.")
     
     # FIX: Correct Normalization for CIFAR-10 (Standard Deviations were incorrect)
+    # Set Normalization so AutoAttack scales epsilon correctly
     if dataset_name == "cifar10":
         atk.set_normalization_used(
             mean=torch.tensor([0.4914, 0.4822, 0.4465]).view(3, 1, 1).to(device), 
+            std=torch.tensor([0.225, 0.225, 0.225]).view(3, 1, 1).to(device)
+        )
+    elif dataset_name == "imagenette":
+        atk.set_normalization_used(
+            mean=torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1).to(device), 
             std=torch.tensor([0.225, 0.225, 0.225]).view(3, 1, 1).to(device)
         )
 
@@ -1505,7 +1624,7 @@ def compute_hybrid_vra(images, targets, model, eps_rescaled, clean_indices, devi
                 device, classes, args, batch_size=1, return_robust_points=True, x_U=None, x_L=None, groupsort=groupsort
             )
         else:
-            hybrid_vra, time_hybrid, robust_idxs_hybrid = compute_alphacrown_vra_and_time(
+            vra, t_v, idx_robust = compute_alphacrown_vra_and_time(
             z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args, # Scaled EPS
             batch_size=args.batch_size, norm=2, x_U=None, x_L=None, return_robust_points=True
         )

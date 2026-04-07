@@ -7,6 +7,7 @@ import gc
 import copy 
 from models import *
 from project_utils import *
+import ast
 from robustness_registery import *
 
 # --- Model Zoo ---
@@ -71,8 +72,8 @@ def find_max_epsilon_binary_CRA(images, model, clean_indices, args, L, tol=0.000
     print(f"\n[Phase 1] Binary Search for CERTIFIED Boundary (Norm: {args.norm})")
     
     # 1. Setup Scaling
-    is_cifar = "cifar" in args.dataset.lower()
-    scale_factor = 0.225 if is_cifar else 1.0
+    is_cifar_or_imagenet = "cifar" in args.dataset.lower() or "imagenette" in args.dataset.lower()
+    scale_factor = 0.225 if is_cifar_or_imagenet else 1.0
     
     low = 0.00001
     high = 4  # Start with the arg default (e.g., 4.0)
@@ -139,7 +140,7 @@ def main():
     parser.add_argument('--norm', default=2, choices=[2, 'inf'])
     parser.add_argument('--model_path', type=str, required=True)
     parser.add_argument('--model', type=str, required=True)
-    parser.add_argument('--dataset', type=str, required=True, choices=['cifar10', 'mnist'])
+    parser.add_argument('--dataset', type=str, required=True, choices=['cifar10', 'mnist', 'imagenette'])
     parser.add_argument('--batch_size', type=int, default=2)
     parser.add_argument('--output_csv', type=str, default='results/study.csv')
     parser.add_argument('--num_points', type=int, default=15, help='Points to sample in linear paving')
@@ -150,7 +151,33 @@ def main():
     parser.add_argument('--high_tau', default=False, type=bool, help='Training temperature high/low')
     parser.add_argument('--split_index', default=-1, type=int, help='Layer index to split the model for Hybrid verification. -1 disables hybrid.')
     parser.add_argument('--sdp', default=True, type=bool, help='If true, sdp verification used for hybrid')
+    parser.add_argument('--start_step', default=1, type=int, help='starting index of the epsilon scale')
+    
+    
+    # 2. Accept the config as a string
+    parser.add_argument('--solvers_config', type=str, default="{}", 
+                        help="JSON-like string to override defaults")
+
     args = parser.parse_args()
+
+    # 3. Parse the user input
+    # ast.literal_eval is safer than json.loads for single quotes
+    user_overrides = ast.literal_eval(args.solvers_config)
+    
+    default_solvers = {
+        "aa": True, 
+        "cra": True, 
+        "cra_pi": True, 
+        "alphacrown": True, 
+        "heavy_certified": True,
+        "hybrid": False 
+    }
+
+    # 4. OVERRIDE logic: Start with defaults, then update with user choices
+    solvers = default_solvers.copy()
+    solvers.update(user_overrides)
+
+    print(f"Final Solvers: {solvers}")
 
     # --- 1. SET ENVIRONMENT TO REDUCE FRAGMENTATION ---
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -189,8 +216,10 @@ def main():
     print("\n[Setup] Computing Lipschitz Constant via Power Iteration...")
     if "mnist" in args.dataset.lower():
         inp_shape = (1, 1, 28, 28)
+    elif "imagenette" in args.dataset.lower():
+        inp_shape = (1, 3, 224, 224)
     else:
-        inp_shape = (1, 3, 32, 32)
+        inp_shape = (1, 3, 32, 32) # CIFAR-10 fallback
     try:
         L_2_empirical = compute_model_lipschitz(model, input_shape=inp_shape, device=device)
         L_PI = convert_lipschitz_constant(L_2_empirical, str(args.norm), images[0].numel())
@@ -222,7 +251,7 @@ def main():
         # else:
         #     paving_max = cra_boundary * 3
         if args.norm == 'inf':
-            paving_max = cra_boundary * 1.5
+            paving_max = cra_boundary * 3.5
         else:
             paving_max = cra_boundary * 1.2
     else:
@@ -233,26 +262,20 @@ def main():
     # Phase 2: Systematic Paving
     epsilon_range = np.linspace(0.0001, paving_max, args.num_points)
     
-    solvers = {
-        "aa": True, 
-        "cra": True, 
-        "cra_pi": True, 
-        "alphacrown": False, 
-        "heavy_certified": False,
-        "hybrid": True 
-    }
 
     print(f"\n[Phase 2] Paving Range [0, {paving_max:.4f}]")
     print("        Stopping when Best Certified (Union) reaches 0%.")
+    
 
-    for eps in epsilon_range[1:8]:
+      
+    for eps in epsilon_range[args.start_step:10]:
         print(f"\n--- EVALUATING EPSILON: {eps:.5f} ---")
         
         # --- Pre-iteration Cleanup ---
         torch.cuda.empty_cache()
         gc.collect()
 
-        eps_rescaled = eps / 0.225 if "cifar" in args.dataset.lower() else eps
+        eps_rescaled = eps / 0.225 if ("cifar" in args.dataset.lower() or "imagenette" in args.dataset.lower()) else eps
         result_dict = {'epsilon': eps}
         
         certified_indices_union = set()
@@ -302,11 +325,18 @@ def main():
         # --- Setup for Crown ---
         x_L = torch.zeros((1, 1, 28, 28), device=device)
         x_U = torch.ones((1, 1, 28, 28), device=device)
+        
         if "cifar" in args.dataset.lower():
             MEANS = torch.tensor([0.4914, 0.4822, 0.4465], device=device).view(1, 3, 1, 1)
             STD = torch.tensor([0.225, 0.225, 0.225], device=device).view(1, 3, 1, 1)
             x_L = ((0.0 - MEANS) / STD).expand(1, 3, 32, 32).contiguous()
             x_U = ((1.0 - MEANS) / STD).expand(1, 3, 32, 32).contiguous()
+            
+        elif "imagenette" in args.dataset.lower():
+            MEANS = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
+            STD = torch.tensor([0.225, 0.225, 0.225], device=device).view(1, 3, 1, 1)
+            x_L = ((0.0 - MEANS) / STD).expand(1, 3, 224, 224).contiguous()
+            x_U = ((1.0 - MEANS) / STD).expand(1, 3, 224, 224).contiguous()
 
         # --- Alpha-CROWN ---
         if solvers["alphacrown"]:
@@ -453,7 +483,7 @@ def main():
             break
 
     print("\nStudy Complete. Results saved to:", args.output_csv)
-    create_final_paper_plot(f"{os.path.splitext(args.output_csv)[0]}_norm_{args.norm}.csv", f"{os.path.splitext(args.output_csv)[0]}_norm_{args.norm}.png")
+    create_final_paper_plot_PI(f"{os.path.splitext(args.output_csv)[0]}_norm_{args.norm}.csv", f"{os.path.splitext(args.output_csv)[0]}_norm_{args.norm}.png")
 
 if __name__ == '__main__':
     main()

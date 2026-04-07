@@ -70,8 +70,12 @@ def run_hybrid_verification(args, model_zoo):
     # NEW: LIPSCHITZ ESTIMATION VIA POWER ITERATION
     # ======================================================================
     print("\n--- Estimating Lipschitz Constants (Power Iteration) ---")
+    
+    # --- UPDATED: Shape mapping for Imagenette ---
     if "mnist" in args.dataset.lower():
         inp_shape = (1, 1, 28, 28)
+    elif "imagenette" in args.dataset.lower():
+        inp_shape = (1, 3, 224, 224)
     else:
         inp_shape = (1, 3, 32, 32)
         
@@ -340,6 +344,12 @@ if __name__ == '__main__':
         "VGG13_1_LIP_Bjork_CIFAR10": VGG13_1_LIP_Bjork_CIFAR10 if 'VGG13_1_LIP_Bjork_CIFAR10' in globals() else None,
         "VGG16_1_LIP_Bjork_CIFAR10": VGG16_1_LIP_Bjork_CIFAR10 if 'VGG16_1_LIP_Bjork_CIFAR10' in globals() else None,
         "VGG19_1_LIP_Bjork_CIFAR10": VGG19_1_LIP_Bjork_CIFAR10 if 'VGG19_1_LIP_Bjork_CIFAR10' in globals() else None,
+        
+        # --- NEW: Imagenette ResNet Models ---
+        "ResNet18_1_LIP_GNP": ResNet18_1_LIP_GNP if 'ResNet18_1_LIP_GNP' in globals() else None,
+        "ResNet18_1_LIP_Bjork": ResNet18_1_LIP_Bjork if 'ResNet18_1_LIP_Bjork' in globals() else None,
+        "ResNet18_1_LIP_GNP_Imagenette": ResNet18_1_LIP_GNP_Imagenette if 'ResNet18_1_LIP_GNP_Imagenette' in globals() else None,
+        "ResNet18_1_LIP_Bjork_Imagenette": ResNet18_1_LIP_Bjork_Imagenette if 'ResNet18_1_LIP_Bjork_Imagenette' in globals() else None,
     }
     
     # --- Argument Parsing ---
@@ -348,7 +358,10 @@ if __name__ == '__main__':
     )
     parser.add_argument('--model_path', type=str, required=True, help='Path to the saved model .pth file.')
     parser.add_argument('--model', type=str, required=True, choices=model_zoo.keys(), help='Name of the 1-Lipschitz model architecture.')
-    parser.add_argument('--dataset', type=str, required=True, choices=['cifar10', 'mnist'], help='Dataset to use for evaluation.')
+    
+    # --- UPDATED: Added imagenette to choices ---
+    parser.add_argument('--dataset', type=str, required=True, choices=['cifar10', 'mnist', 'imagenette'], help='Dataset to use for evaluation.')
+    
     parser.add_argument('--epsilon', type=float, required=True, help='Adversarial L2 perturbation radius (e.g., 0.5).')
     parser.add_argument('--split_index', type=int, required=True, help='The index of the layer to split *before*.')
     
@@ -376,5 +389,3 @@ if __name__ == '__main__':
         
     # Run the main verification logic
     run_hybrid_verification(args, model_zoo)
-
-    

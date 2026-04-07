@@ -13,6 +13,15 @@ import torch
 import torch.nn as nn
 import sys
 
+# Update path to your local SDP-CROWN repository
+SDP_CROWN_PATH = '/home/aws_install/robustess_project/SDP-CROWN'
+sys.path.insert(0, SDP_CROWN_PATH)
+
+from auto_LiRPA import BoundedModule, BoundedTensor, register_custom_op
+from auto_LiRPA.operators import BoundTwoPieceLinear
+from auto_LiRPA.perturbations import PerturbationLpNorm
+from auto_LiRPA.patches import Patches
+
 class GroupSort_General(nn.Module):
     """
     Applies GroupSort specifically on the channel dimension.
@@ -43,11 +52,11 @@ class GroupSort_General(nn.Module):
         batch_size = permuted_shape[0]
         num_channels = permuted_shape[-1]
         
-        if num_channels % 2 != 0:
-             raise ValueError(
-                f"The number of channels must be even, but got {num_channels} "
-                f"for input shape {x.shape}."
-            )
+        # if num_channels % 2 != 0:
+        #      raise ValueError(
+        #         f"The number of channels must be even, but got {num_channels} "
+        #         f"for input shape {x.shape}."
+        #     )
 
         # 2. Flatten for the sorting logic
         # We flatten everything except batch. Since Channel is now last,
@@ -95,21 +104,21 @@ class GroupSort_General(nn.Module):
         return output
     
     
-# class GroupSort2Optimized(nn.Module):
-#     # THIS IMPLEMENTATION IS NOT VERIFIABLE WITH auto_LiRPA
-#     # due to torch.max(a, b)
-#     def __init__(self):
-#         super(GroupSort2Optimized, self).__init__()
-#     def forward(self, x: torch.Tensor) -> torch.Tensor:
-#         N, C, H, W = x.shape
-#         x_reshaped = x.view(N, C // 2, 2, H, W)
-#         x1s = x_reshaped[:, :, 0, :, :]
-#         x2s = x_reshaped[:, :, 1, :, :]
-#         # Max + Sum Preservation Logic
-#         y2_max = torch.max(x1s, x2s)
-#         y1_min = (x1s + x2s) - y2_max
-#         sorted_pairs = torch.stack((y1_min, y2_max), dim=2)
-#         return sorted_pairs.view(N, C, H, W)
+class GroupSort2Optimized(nn.Module):
+    # THIS IMPLEMENTATION IS NOT VERIFIABLE WITH auto_LiRPA
+    # due to torch.max(a, b)
+    def __init__(self):
+        super(GroupSort2Optimized, self).__init__()
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        N, C, H, W = x.shape
+        x_reshaped = x.view(N, C // 2, 2, H, W)
+        x1s = x_reshaped[:, :, 0, :, :]
+        x2s = x_reshaped[:, :, 1, :, :]
+        # Max + Sum Preservation Logic
+        y2_max = torch.max(x1s, x2s)
+        y1_min = (x1s + x2s) - y2_max
+        sorted_pairs = torch.stack((y1_min, y2_max), dim=2)
+        return sorted_pairs.view(N, C, H, W)
 
     
 
@@ -469,6 +478,50 @@ def ConvLarge_CIFAR10_1_LIP():
     )
     return model
 
+def VGG13_1_LIP_CIFAR10():
+    """
+    Model: VGG13-like_1_LIP_Bjork (CIFAR-10)
+    Structure matched to GNP version but with SpectralConv2d
+    """
+    model = torchlip.Sequential(
+        # Block 1
+        torchlip.SpectralConv2d(3, 64, 3, 1, 1, eps_bjorck=None),
+        nn.ReLU(),
+        torchlip.SpectralConv2d(64, 64, 3, 1, 1, eps_bjorck=None),
+        nn.ReLU(),
+        # Downsample
+        torchlip.SpectralConv2d(64, 64, 3, 2, 1, eps_bjorck=None),
+        nn.ReLU(),
+
+        # Block 2
+        torchlip.SpectralConv2d(64, 128, 3, 1, 1, eps_bjorck=None),
+        nn.ReLU(),
+        torchlip.SpectralConv2d(128, 128, 3, 1, 1, eps_bjorck=None),
+        nn.ReLU(),
+        # Downsample
+        torchlip.SpectralConv2d(128, 128, 3, 2, 1, eps_bjorck=None),
+        nn.ReLU(),
+
+        # Block 3
+        torchlip.SpectralConv2d(128, 256, 3, 1, 1, eps_bjorck=None),
+        nn.ReLU(),
+        torchlip.SpectralConv2d(256, 256, 3, 1, 1, eps_bjorck=None),
+        nn.ReLU(),
+        # Downsample
+        torchlip.SpectralConv2d(256, 256, 3, 2, 1, eps_bjorck=None),
+        nn.ReLU(),
+
+        # Classifier
+        nn.Flatten(),
+        torchlip.SpectralLinear(256 * 4 * 4, 512),
+        nn.ReLU(),
+        torchlip.SpectralLinear(512, 512),
+        nn.ReLU(),
+        torchlip.SpectralLinear(512, 10)
+    )
+    return model
+
+
 
 # Note: This python file present every model we use for benchmarking. 
 # These models correspond to the lipschitz Gradient Norm Preserving version of all the model architectures from Wang et al. (2021) & Leino et al. (2021)
@@ -555,216 +608,91 @@ def CNNA_CIFAR10_1_LIP_GNP():
 
 
 
-# class GroupSort(nn.Module):
-#     """
-#     1-Lipschitz GroupSort operator (Universal).
-    
-#     - Implemented via Sparse Convolutions (1x1).
-#     - Agnostic to input shape: works automatically for (B, C), (B, C, H, W), etc.
-#     - Verified Auto_LiRPA sound.
-#     """
-#     def __init__(self, channels, axis=1):
-#         super().__init__()
-#         self.axis = axis
-#         self.channels = channels
-        
-#         # We use Conv2d(1x1) as the universal computing engine
-#         self.diff = nn.Conv2d(channels, channels // 2, kernel_size=1, bias=False)
-#         self.expand = nn.Conv2d(channels // 2, channels, kernel_size=1, bias=False)
-        
-#         # Freeze and initialize weights
-#         self.diff.weight.requires_grad = False
-#         self.expand.weight.requires_grad = False
-#         self._init_weights()
-
-#     def _init_weights(self):
-#         with torch.no_grad():
-#             self.diff.weight.fill_(0)
-#             for k in range(self.channels // 2):
-#                 self.diff.weight[k, 2*k, 0, 0] = 1.0
-#                 self.diff.weight[k, 2*k + 1, 0, 0] = -1.0
-            
-#             self.expand.weight.fill_(0)
-#             for k in range(self.channels // 2):
-#                 self.expand.weight[2*k, k, 0, 0] = -1.0 
-#                 self.expand.weight[2*k + 1, k, 0, 0] = 1.0
-
-#     def forward(self, x):
-#         # 1. Standardize the sorting axis to index 1 (Channel dimension)
-#         if self.axis != 1:
-#             x_raw = x.transpose(1, self.axis)
-#         else:
-#             x_raw = x
-
-#         # 2. Capture original shape to restore later
-#         original_shape = x_raw.shape
-        
-#         # 3. Agnostic Reshape: (Batch, Channel, ...) -> (Batch, Channel, 1, Flat)
-#         #    This forces the tensor into a 4D shape compatible with Conv2d
-#         #    regardless of whether the input was 2D, 3D, or 4D.
-#         x_view = x_raw.reshape(original_shape[0], original_shape[1], 1, -1)
-
-#         # 4. Apply Sorting Logic
-#         #    Note: The 1x1 kernel treats the flattened dim independently
-#         v = self.diff(x_view)
-#         z = torch.relu(v)
-#         correction = self.expand(z)
-#         out_view = x_view + correction
-
-#         # 5. Restore original shape
-#         out = out_view.view(original_shape)
-        
-#         # 6. Restore original axis
-#         if self.axis != 1:
-#             out = out.transpose(1, self.axis)
-            
-#         return out
-
-
-# class GroupSort(nn.Module):
-#     """
-#     Universal GroupSort (1-Lipschitz).
-    
-#     - If input is 4D (N, C, H, W): Acts as a 1x1 Convolution (Spatial).
-#     - If input is 2D (N, C): Acts as a Linear layer (Dense).
-    
-#     Implemented via Conv2d weights to ensure maximum compatibility with 
-#     Auto_LiRPA's bound propagation graph.
-#     """
-#     def __init__(self, channels, axis=1):
-#         super().__init__()
-#         # Auto_LiRPA verification usually targets the channel axis (1).
-#         if axis != 1:
-#             raise ValueError("GroupSort axis must be 1 (Channel).")
-        
-#         if channels % 2 != 0:
-#             raise ValueError(f"Channels must be even, got {channels}")
-            
-#         self.channels = channels
-        
-#         # We use Conv2d(1x1) as the core engine. 
-#         # For 2D inputs, we simply unsqueeze dimensions to fit this engine.
-#         self.conv_diff = nn.Conv2d(channels, channels // 2, kernel_size=1, bias=False)
-#         self.conv_expand = nn.Conv2d(channels // 2, channels, kernel_size=1, bias=False)
-        
-#         # Freeze weights
-#         self.conv_diff.weight.requires_grad = False
-#         self.conv_expand.weight.requires_grad = False
-#         self._init_weights()
-
-#     def _init_weights(self):
-#         with torch.no_grad():
-#             # 1. Diff Conv: Calculate (Even - Odd)
-#             self.conv_diff.weight.fill_(0)
-#             for k in range(self.channels // 2):
-#                 self.conv_diff.weight[k, 2*k, 0, 0] = 1.0     # Even
-#                 self.conv_diff.weight[k, 2*k + 1, 0, 0] = -1.0 # Odd
-            
-#             # 2. Expand Conv: Apply corrections
-#             self.conv_expand.weight.fill_(0)
-#             for k in range(self.channels // 2):
-#                 # If (Even > Odd), subtract difference from Even (swap)
-#                 self.conv_expand.weight[2*k, k, 0, 0] = -1.0
-#                 # If (Even > Odd), add difference to Odd (swap)
-#                 self.conv_expand.weight[2*k + 1, k, 0, 0] = 1.0
-
-#     def forward(self, x):
-#         # 1. Detect Input Type
-#         is_2d = (x.dim() == 2)
-        
-#         if is_2d:
-#             # Case: Linear Layer Output (N, C)
-#             # We reshape to (N, C, 1, 1) so it looks like an image pixel.
-#             # This is safe for verification because there is no spatial structure to lose.
-#             x_reshaped = x.view(*x.shape, 1, 1)
-#         else:
-#             # Case: Conv Layer Output (N, C, H, W)
-#             # Use as is.
-#             x_reshaped = x
-
-#         # 2. Sort Logic (Identical for both)
-#         diff = self.conv_diff(x_reshaped)
-#         activation = torch.relu(diff)
-#         correction = self.conv_expand(activation)
-#         out_reshaped = x_reshaped + correction
-        
-#         # 3. Restore Output Shape
-#         if is_2d:
-#             # Reshape (N, C, 1, 1) back to (N, C)
-#             return out_reshaped.view(x.shape)
-#         else:
-#             return out_reshaped
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
 class GroupSort(nn.Module):
     """
-    SDP-CROWN Safe GroupSort.
+    1-Lipschitz GroupSort operator (Universal).
     
-    Crucial for Stability:
-    - 4D Inputs (Conv): Uses nn.Conv2d.
-    - 2D Inputs (Linear): Uses F.linear (Explicit Matrix Multiply).
-    
-    This prevents the "Size mismatch at dimension 3" error in SDP-CROWN
-    by ensuring 2D inputs never have a 'ghost' spatial dimension.
+    - Implemented via Sparse Convolutions (1x1).
+    - Agnostic to input shape: works automatically for (B, C), (B, C, H, W), etc.
+    - Verified Auto_LiRPA sound.
     """
     def __init__(self, channels, axis=1):
         super().__init__()
-        if axis != 1:
-            raise ValueError("GroupSort axis must be 1 (Channel).")
-        
-        if channels % 2 != 0:
-            raise ValueError(f"Channels must be even, got {channels}")
-            
-        self.channels = channels
         self.axis = axis
+        self.channels = channels
         
-        # Store weights in Conv2d to allow easy loading of state_dicts
-        self.conv_diff = nn.Conv2d(channels, channels // 2, kernel_size=1, bias=False)
-        self.conv_expand = nn.Conv2d(channels // 2, channels, kernel_size=1, bias=False)
+        # We use Conv2d(1x1) as the universal computing engine
+        self.diff = nn.Conv2d(channels, channels // 2, kernel_size=1, bias=False)
+        self.expand = nn.Conv2d(channels // 2, channels, kernel_size=1, bias=False)
         
-        # Freeze and Initialize
-        self.conv_diff.weight.requires_grad = False
-        self.conv_expand.weight.requires_grad = False
+        # Freeze and initialize weights
+        self.diff.weight.requires_grad = False
+        self.expand.weight.requires_grad = False
         self._init_weights()
 
     def _init_weights(self):
         with torch.no_grad():
-            self.conv_diff.weight.fill_(0)
+            self.diff.weight.fill_(0)
             for k in range(self.channels // 2):
-                self.conv_diff.weight[k, 2*k, 0, 0] = 1.0
-                self.conv_diff.weight[k, 2*k + 1, 0, 0] = -1.0
+                self.diff.weight[k, 2*k, 0, 0] = 1.0
+                self.diff.weight[k, 2*k + 1, 0, 0] = -1.0
             
-            self.conv_expand.weight.fill_(0)
+            self.expand.weight.fill_(0)
             for k in range(self.channels // 2):
-                self.conv_expand.weight[2*k, k, 0, 0] = -1.0
-                self.conv_expand.weight[2*k + 1, k, 0, 0] = 1.0
+                self.expand.weight[2*k, k, 0, 0] = -1.0 
+                self.expand.weight[2*k + 1, k, 0, 0] = 1.0
 
     def forward(self, x):
-        # Path A: Convolutional (N, C, H, W)
-        if x.dim() == 4:
-            diff = self.conv_diff(x)
-            activation = torch.relu(diff)
-            correction = self.conv_expand(activation)
-            return x + correction
-
-        # Path B: Linear (N, C) - The Fix for SDP-CROWN
-        elif x.dim() == 2:
-            # Dynamically reshape the 1x1 conv weights to Linear weights (Out, In)
-            w_diff = self.conv_diff.weight.view(self.channels // 2, self.channels)
-            w_expand = self.conv_expand.weight.view(self.channels, self.channels // 2)
-            
-            # Use functional linear instead of fake reshaping
-            diff = F.linear(x, w_diff)
-            activation = torch.relu(diff)
-            correction = F.linear(activation, w_expand)
-            return x + correction
-            
+        # 1. Standardize the sorting axis to index 1 (Channel dimension)
+        if self.axis != 1:
+            x_raw = x.transpose(1, self.axis)
         else:
-            raise ValueError(f"GroupSort input must be 2D or 4D, got {x.dim()}D")
+            x_raw = x
+
+        # 2. Capture original shape to restore later
+        original_shape = x_raw.shape
         
+        # 3. Agnostic Reshape: (Batch, Channel, ...) -> (Batch, Channel, 1, Flat)
+        #    This forces the tensor into a 4D shape compatible with Conv2d
+        #    regardless of whether the input was 2D, 3D, or 4D.
+        x_view = x_raw.reshape(original_shape[0], original_shape[1], 1, -1)
+
+        # 4. Apply Sorting Logic
+        #    Note: The 1x1 kernel treats the flattened dim independently
+        v = self.diff(x_view)
+        z = torch.relu(v)
+        correction = self.expand(z)
+        out_view = x_view + correction
+
+        # 5. Restore original shape
+        out = out_view.view(original_shape)
+        
+        # 6. Restore original axis
+        if self.axis != 1:
+            out = out.transpose(1, self.axis)
+            
+        return out
+
+# def CNNA_CIFAR10_1_LIP_GNP():
+#     """
+#     Model: CNN-A_1_LIP_GNP (CIFAR-10)
+#     Structure: Conv(3, 16, 4, 2, 1) -> ReLU -> Conv(16, 32, 4, 2, 1) -> ReLU -> Linear(2048, 100) -> ReLU -> Linear(100, 10)
+#     """
+#     model = torchlip.Sequential(
+#         AdaptiveOrthoConv2d(in_channels=3, out_channels=16, kernel_size=4, stride=2, padding=1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
+#         GroupSort(channels=16, axis=1),
+#         # nn.ReLU(),
+#         AdaptiveOrthoConv2d(in_channels=16, out_channels=32, kernel_size=4, stride=2, padding=1, padding_mode='zeros',ortho_params=DEFAULT_ORTHO_PARAMS),
+#         GroupSort(channels=32, axis=1),
+#         # nn.ReLU(),
+#         nn.Flatten(),
+#         torchlip.SpectralLinear(32 * 8 * 8, 100), # 2048 input features
+#         GroupSort(channels=100, axis=1),
+#         # nn.ReLU(),
+#         torchlip.SpectralLinear(100, 10)
+#     )
+#     return model
+
 def CNNA_CIFAR10_1_LIP_GNP_torchlip():
     """
     Model: CNN-A_1_LIP_GNP (CIFAR-10)
@@ -908,6 +836,37 @@ def ConvLarge_CIFAR10_1_LIP_GNP():
         GroupSort_General(),
         # nn.ReLU(),
         torchlip.SpectralLinear(512, 512),
+        GroupSort_General(),
+        # nn.ReLU(),
+        torchlip.SpectralLinear(512, 10)
+    )
+    return model
+
+def ConvLarge_Bottleneck_1_LIP_GNP():
+    """
+    Model: ConvLarge_Bottleneck_1_LIP_GNP (CIFAR-10)
+    Structure: Conv(3, 32, 3, 1, 1) -> GroupSort -> Conv(32, 8, 4, 2, 1) -> GroupSort -> 
+               Conv(8, 64, 3, 1, 1) -> GroupSort -> Conv(64, 64, 4, 2, 1) -> GroupSort -> 
+               Linear(4096, 1024) -> GroupSort -> Linear(1024, 512) -> GroupSort -> Linear(512, 10)
+    """
+    model = torchlip.Sequential(
+        AdaptiveOrthoConv2d(in_channels=3, out_channels=32, kernel_size=3, stride=1, padding=1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        # nn.ReLU(),
+        AdaptiveOrthoConv2d(in_channels=32, out_channels=8, kernel_size=4, stride=2, padding=1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        # nn.ReLU(),
+        AdaptiveOrthoConv2d(in_channels=8, out_channels=64, kernel_size=3, stride=1, padding=1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        # nn.ReLU(),
+        AdaptiveOrthoConv2d(in_channels=64, out_channels=64, kernel_size=4, stride=2, padding=1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        # nn.ReLU(),
+        nn.Flatten(),
+        torchlip.SpectralLinear(64 * 8 * 8, 1024), # 4096 input features
+        GroupSort_General(),
+        # nn.ReLU(),
+        torchlip.SpectralLinear(1024, 512),
         GroupSort_General(),
         # nn.ReLU(),
         torchlip.SpectralLinear(512, 10)
@@ -1383,3 +1342,305 @@ def VGG19_1_LIP_Bjork_CIFAR10():
     )
     return model
 
+from typing import List
+from deel import torchlip
+from orthogonium.layers import AdaptiveOrthoConv2d, OrthoLinear
+import torch
+import torch.nn as nn
+import math
+import torch
+import torch.nn as nn
+
+class LirpaFriendlyL2Pool2d(nn.Module):
+    def __init__(self, kernel_size, stride, k_coef_lip=1.0):
+        super().__init__()
+        if isinstance(kernel_size, tuple):
+            self.n_pixels = kernel_size[0] * kernel_size[1]
+        else:
+            self.n_pixels = kernel_size ** 2
+        
+        self.scaling_factor = math.sqrt(self.n_pixels) * k_coef_lip
+        self.pool = nn.AvgPool2d(kernel_size=kernel_size, stride=stride)
+
+    def forward(self, x):
+        # Remove epsilon for the sanity check match
+        # auto_LiRPA can handle sqrt(x) as long as x > 0
+        return torch.sqrt(self.pool(x.pow(2))) * self.scaling_factor
+
+class LirpaFriendlyAdaptiveL2Pool2d(nn.Module):
+    def __init__(self, output_size=(1, 1), k_coef_lip=1.0):
+        super().__init__()
+        self.pool = nn.AdaptiveAvgPool2d(output_size)
+        self.k_coef_lip = k_coef_lip
+
+    def forward(self, x):
+        n_pixels = x.shape[-2] * x.shape[-1]
+        # Match the DEEL math exactly: sqrt(sum(x^2))
+        return torch.sqrt(self.pool(x.pow(2)) * n_pixels) * self.k_coef_lip
+    
+class LirpaBatchCentering2D(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        # We create a buffer so vanilla_export can copy the trained running_mean into it
+        self.register_buffer("running_mean", torch.zeros(1, channels, 1, 1))
+
+    def forward(self, x):
+        # Subtract the fixed mean stored during training
+        return x - self.running_mean
+
+class LirpaPixelUnshuffle(nn.Module):
+    def __init__(self, upscale_factor):
+        super().__init__()
+        self.r = upscale_factor
+
+    def forward(self, x):
+        # Explicitly extract dimensions as integers
+        # This prevents auto_LiRPA from creating "BoundGather" nodes for shapes
+        b, c, h, w = x.shape
+        r = self.r
+        
+        # Manually perform the unshuffle using explicit views
+        # This bypasses the problematic nn.PixelUnshuffle trace
+        out = x.view(b, c, h // r, r, w // r, r)
+        out = out.permute(0, 1, 3, 5, 2, 4).contiguous()
+        return out.view(b, c * (r ** 2), h // r, w // r)
+    
+class BasicBlockLipschitz(nn.Module):
+    expansion = 1
+
+    def __init__(self, in_channels: int, out_channels: int, stride: int = 1, orthogonal: bool = False):
+        super().__init__()
+
+        conv = AdaptiveOrthoConv2d if orthogonal else torchlip.SpectralConv2d
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.alpha = nn.Parameter(torch.tensor(0.0), requires_grad=True)
+        
+        self.conv1 = conv(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, padding_mode="zeros", bias=False)
+        self.conv2 = conv(out_channels, out_channels, kernel_size=3, stride=1, padding=1, padding_mode="zeros", bias=False)
+        
+        self.bc1 = LirpaBatchCentering2D(out_channels)
+        self.bc2 = LirpaBatchCentering2D(out_channels)
+        self.act = GroupSort_General()
+        
+        if in_channels != out_channels:
+            if stride != 1:
+                self.skipconv = nn.Sequential(
+                    LirpaPixelUnshuffle(stride),
+                    conv(in_channels * stride ** 2, out_channels, kernel_size=1, stride=1, padding=0, bias=False)
+                )
+            else:
+                self.skipconv = conv(in_channels, out_channels, kernel_size=1, stride=1, padding=0, bias=False)
+        else:
+            self.skipconv = nn.Identity()
+            
+        self.skipbc = LirpaBatchCentering2D(out_channels)
+
+    def forward(self, x):
+        residual = x
+        
+        if self.in_channels != self.out_channels:
+            residual = self.skipconv(residual)
+        residual = self.skipbc(residual)
+
+        x = self.conv1(x)
+        x = self.bc1(x)
+        x = self.act(x)
+        
+        x = self.conv2(x)
+        x = self.bc2(x)
+
+        alpha = torch.sigmoid(self.alpha).view(1, 1, 1, 1)
+        x = alpha * x + (1 - alpha) * residual
+        return x
+
+
+class BottleneckBlockLipschitz(nn.Module):
+    expansion = 4
+
+    def __init__(self, in_channels: int, out_channels: int, stride: int = 1, orthogonal: bool = False):
+        super().__init__()
+
+        conv = AdaptiveOrthoConv2d if orthogonal else torchlip.SpectralConv2d
+
+        self.alpha = nn.Parameter(torch.tensor(0.0), requires_grad=True)
+        
+        self.conv1 = conv(in_channels, out_channels, kernel_size=1, stride=1, padding=0, bias=False)
+        self.conv2 = conv(out_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.conv3 = conv(out_channels, out_channels * self.expansion, kernel_size=1, stride=1, padding=0, bias=False)
+        
+        self.bc1 = LirpaBatchCentering2D(out_channels)
+        self.bc2 = LirpaBatchCentering2D(out_channels)
+        self.bc3 = LirpaBatchCentering2D(out_channels * self.expansion)
+        self.act = GroupSort_General()
+        
+        # FIXED: Added PixelUnshuffle logic to handle stride > 1 safely for Orthogonal Convolutions
+        if stride != 1 or in_channels != out_channels * self.expansion:
+            if stride != 1:
+                self.shortcut = nn.Sequential(
+                    LirpaPixelUnshuffle(stride),
+                    conv(in_channels * (stride ** 2), out_channels * self.expansion, kernel_size=1, stride=1, padding=0, bias=False),
+                    LirpaBatchCentering2D(out_channels * self.expansion)
+                )
+            else:
+                self.shortcut = nn.Sequential(
+                    conv(in_channels, out_channels * self.expansion, kernel_size=1, stride=1, padding=0, bias=False),
+                    LirpaBatchCentering2D(out_channels * self.expansion)
+                )
+        else:
+            self.shortcut = nn.Identity()
+
+    def forward(self, x):
+        residual = x
+        alpha = alpha = torch.sigmoid(self.alpha).view(1, 1, 1, 1)
+        
+        x = self.conv1(x)
+        x = self.bc1(x)
+        x = self.act(x)
+        
+        x = self.conv2(x)
+        x = self.bc2(x)
+        x = self.act(x)
+        
+        x = self.conv3(x)
+        x = self.bc3(x)
+        
+        x = alpha * x + (1 - alpha) * self.shortcut(residual)
+        x = self.act(x)
+        return x
+    
+class ResNetLipschitz(nn.Module):
+    def __init__(
+            self, 
+            in_channels: int, 
+            out_channels: int, 
+            block: BasicBlockLipschitz | BottleneckBlockLipschitz, 
+            layers: List[int], 
+            num_classes: int, 
+            orthogonal: bool = False,
+            input_size: int = 32) -> None:
+        super().__init__()
+
+        conv = AdaptiveOrthoConv2d if orthogonal else torchlip.SpectralConv2d
+        
+        # We now use SpectralLinear in all cases, removing the 'linear' toggle.
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.input_size = input_size
+
+        # 1. Initial Pooling (Only for large inputs)
+        if input_size == 224:
+            self.conv1 = conv(in_channels, out_channels, kernel_size=7, stride=2, padding=3, bias=False)
+            self.pool1 = LirpaFriendlyL2Pool2d(kernel_size=2, stride=2)
+        else:
+            self.conv1 = conv(in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+            self.pool1 = nn.Identity()
+
+        self.bc1 = LirpaBatchCentering2D(out_channels)
+        self.act = GroupSort_General()
+        
+        self.layers = nn.ModuleList([
+            self._make_layer(block, out_channels * (2 ** i), layers[i], stride=1 if i == 0 else 2, orthogonal=orthogonal) 
+            for i in range(len(layers))
+        ])
+        
+        # 2. Global Pooling (Before the classifier)
+        self.pool = LirpaFriendlyAdaptiveL2Pool2d((1, 1))
+        
+        # Always use SpectralLinear
+        self.fc = torchlip.SpectralLinear(int(out_channels * (2 ** (len(layers) - 1)) * block.expansion), num_classes)
+
+    def _make_layer(self, block: nn.Module, out_channels: int, num_blocks: int, stride: int, orthogonal: bool) -> nn.Sequential:
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for s in strides:
+            layers.append(block(self.out_channels, out_channels, s, orthogonal))
+            self.out_channels = out_channels * block.expansion
+        return nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.conv1(x)
+        x = self.bc1(x)
+        x = self.act(x)
+        x = self.pool1(x)
+        
+        for layer in self.layers:
+            for block in layer:
+                x = block(x)
+                
+        x = self.pool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        return x
+    
+def ResNet18_1_LIP_GNP():
+    """
+    Wrapper for a 1-Lipschitz ResNet-18 on CIFAR-10.
+    
+    Note: A standard ResNet-18 uses `BasicBlockLipschitz` with a [2, 2, 2, 2] layout. 
+    If your strict requirement is to use Bottleneck blocks based on the naming convention, 
+    you can swap `BasicBlockLipschitz` for `BottleneckBlockLipschitz`, but it will no 
+    longer be a standard ResNet-18.
+    """
+    return ResNetLipschitz(
+        in_channels=3,             # RGB images for CIFAR-10
+        out_channels=64,           # Starting number of filters
+        block=BasicBlockLipschitz, # Standard ResNet-18 uses Basic Blocks
+        layers=[2, 2, 2, 2],       # The block distribution for ResNet-18
+        num_classes=10,            # 10 classes in CIFAR-10
+        orthogonal=True,          # Set to True if you want AdaptiveOrthoConv2d instead of SpectralConv
+        input_size=32              # 32x32 resolution for CIFAR-10
+    )
+
+    
+def ResNet18_1_LIP_Bjork():
+    """
+    Wrapper for a 1-Lipschitz ResNet-18 on CIFAR-10.
+    
+    Note: A standard ResNet-18 uses `BasicBlockLipschitz` with a [2, 2, 2, 2] layout. 
+    If your strict requirement is to use Bottleneck blocks based on the naming convention, 
+    you can swap `BasicBlockLipschitz` for `BottleneckBlockLipschitz`, but it will no 
+    longer be a standard ResNet-18.
+    """
+    return ResNetLipschitz(
+        in_channels=3,             # RGB images for CIFAR-10
+        out_channels=64,           # Starting number of filters
+        block=BasicBlockLipschitz, # Standard ResNet-18 uses Basic Blocks
+        layers=[2, 2, 2, 2],       # The block distribution for ResNet-18
+        num_classes=10,            # 10 classes in CIFAR-10
+        orthogonal=False,          # Set to True if you want AdaptiveOrthoConv2d instead of SpectralConv
+        input_size=32              # 32x32 resolution for CIFAR-10
+    )
+
+def ResNet18_1_LIP_GNP_Imagenette():
+    """
+    Wrapper for a 1-Lipschitz ResNet-18 on Imagenette.
+    Uses Orthogonal convolutions (GNP).
+    """
+    return ResNetLipschitz(
+        in_channels=3,             # RGB images
+        out_channels=64,           # Starting number of filters
+        block=BasicBlockLipschitz, # Standard ResNet-18 uses Basic Blocks
+        layers=[2, 2, 2, 2],       # The block distribution for ResNet-18
+        num_classes=10,            # 10 classes in Imagenette
+        orthogonal=True,           # Set to True for AdaptiveOrthoConv2d (GNP)
+        input_size=224             # 224x224 resolution for Imagenette/ImageNet
+    )
+
+
+def ResNet18_1_LIP_Bjork_Imagenette():
+    """
+    Wrapper for a 1-Lipschitz ResNet-18 on Imagenette.
+    Uses Spectral Normalization convolutions (Bjork).
+    """
+    return ResNetLipschitz(
+        in_channels=3,             # RGB images
+        out_channels=64,           # Starting number of filters
+        block=BasicBlockLipschitz, # Standard ResNet-18 uses Basic Blocks
+        layers=[2, 2, 2, 2],       # The block distribution for ResNet-18
+        num_classes=10,            # 10 classes in Imagenette
+        orthogonal=False,          # Set to False for SpectralConv2d (Bjork)
+        input_size=224             # 224x224 resolution for Imagenette/ImageNet
+    )
