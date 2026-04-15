@@ -13,14 +13,14 @@ import torch
 import torch.nn as nn
 import sys
 
-# Update path to your local SDP-CROWN repository
-SDP_CROWN_PATH = '/home/aws_install/robustess_project/SDP-CROWN'
-sys.path.insert(0, SDP_CROWN_PATH)
-
-from auto_LiRPA import BoundedModule, BoundedTensor, register_custom_op
-from auto_LiRPA.operators import BoundTwoPieceLinear
-from auto_LiRPA.perturbations import PerturbationLpNorm
-from auto_LiRPA.patches import Patches
+## Update path to your local SDP-CROWN repository
+#SDP_CROWN_PATH = 'SDP-CROWN'
+#sys.path.insert(0, SDP_CROWN_PATH)
+#
+#from auto_LiRPA import BoundedModule, BoundedTensor, register_custom_op
+#from auto_LiRPA.operators import BoundTwoPieceLinear
+#from auto_LiRPA.perturbations import PerturbationLpNorm
+#from auto_LiRPA.patches import Patches
 
 class GroupSort_General(nn.Module):
     """

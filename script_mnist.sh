@@ -5,12 +5,12 @@ MODEL_BASE_PATH="models"
 
 # 2. Define the list of vanilla ConvLarge models
 MODELS=(
-#     "vanilla_ConvLarge_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T1.0_bs128_lr0.001_eps0.01_heavy_1765374676_acc0.75.pth"
+     "vanilla_ConvLarge_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T1.0_bs128_lr0.001_eps0.01_heavy_1765374676_acc0.75.pth"
 #     "vanilla_ConvLarge_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T400.0_bs256_lr0.00025_eps0.01_heavy_1765292395_acc0.85.pth"
     # "vanilla_ConvLarge_CIFAR10_1_LIP_cifar10_tau_a250.0_T10.0_bs256_lr0.001_eps0.155_light_1766739715_acc0.75.pth"
     # "vanilla_ConvLarge_CIFAR10_1_LIP_cifar10_tau_a250.0_T200.0_bs256_lr0.001_eps0.01_heavy_1765859376_acc0.84.pth"
 #     "vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_1.0_lr0.001_eps0.155_1766393872_acc0.75.pth"
-     "vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_15.0_lr0.001_eps0.155_1766411827_acc0.82.pth"
+#     "vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_15.0_lr0.001_eps0.155_1766411827_acc0.82.pth"
 )
 
 echo "Starting batch processing l2 (ConvLarge Vanilla)..."
@@ -46,7 +46,7 @@ for model_file in "${MODELS[@]}"; do
         --high_tau True \
         --dataset 'cifar10' \
         --output_csv "$csv_name" \
-        --start_step 2\
+        --start_step 1\
         --batch_size 1 ; then
         # > /dev/null 2>&1
         echo "✅ Done. (Saved to $csv_name)"

@@ -35,6 +35,7 @@ def load_cifar10(batch_size, aug_level='medium'):
         aug_level (str): Level of augmentation ('none', 'light', 'medium', 'heavy').
     """
     
+    
     # 1. Define Common Base and Normalization
     # These are applied to all levels and the test set
     base_transforms = [
@@ -1205,11 +1206,10 @@ def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indic
 
 
 import sys
-sys.path.insert(0,'SDP-CROWN')
+sys.path.insert(0,"/lustre/fswork/projects/rech/syo/utf64nw/robust-benchmark/SDP-CROWN/")
 import auto_LiRPA
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
-
 print(auto_LiRPA.__file__)
 
 def build_C(label, classes):
@@ -1396,7 +1396,7 @@ import time
 import torch
 import numpy as np
 
-sys.path.append("alpha-beta-CROWN/complete_verifier")
+sys.path.append("/lustre/fswork/projects/rech/syo/utf64nw/robust-benchmark/alpha-beta-CROWN/complete_verifier")
 from abcrown import ABCROWN # Import the main class from your script
 
 
@@ -1483,7 +1483,7 @@ def compute_alphabeta_vra_and_time(dataset_name, model_name, model_path, epsilon
     return true_vra, avg_time
 
 
-sys.path.append('SDP-CROWN')
+sys.path.append("/lustre/fswork/projects/rech/syo/utf64nw/robust-benchmark/SDP-CROWN/")
 from sdp_crown import verified_sdp_crown
 
 

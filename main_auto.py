@@ -9,6 +9,8 @@ from models import *
 from project_utils import *
 import ast
 from robustness_registery import *
+import matplotlib
+matplotlib.use('Agg')
 
 # --- Model Zoo ---
 model_zoo = {
@@ -48,6 +50,7 @@ model_zoo = {
     "ConvLarge_CIFAR10_1_LIP_GNP": ConvLarge_CIFAR10_1_LIP_GNP if 'ConvLarge_CIFAR10_1_LIP_GNP' in globals() else None,
     "VGG13_1_LIP_GNP_CIFAR10" : VGG13_1_LIP_GNP_CIFAR10 if 'VGG13_1_LIP_GNP_CIFAR10' in globals() else None,
     "VGG19_1_LIP_GNP_CIFAR10" : VGG19_1_LIP_GNP_CIFAR10 if 'VGG19_1_LIP_GNP_CIFAR10' in globals() else None,
+    "ConvLarge_Bottleneck_1_LIP_GNP" : ConvLarge_Bottleneck_1_LIP_GNP if 'ConvLarge_Bottleneck_1_LIP_GNP' in globals() else None,
 
     # --- 1-Lipschitz models (Bjork technique) ---
     "MLP_MNIST_1_LIP_Bjork": MLP_MNIST_1_LIP_Bjork if 'MLP_MNIST_1_LIP_Bjork' in globals() else None,
@@ -153,6 +156,7 @@ def main():
     parser.add_argument('--sdp', default=True, type=bool, help='If true, sdp verification used for hybrid')
     parser.add_argument('--start_step', default=1, type=int, help='starting index of the epsilon scale')
     
+    parser.add_argument('--epsilon_max', type=float, default=None, help='Manually set the maximum epsilon for paving. If None, it is computed via binary search.')
     
     # 2. Accept the config as a string
     parser.add_argument('--solvers_config', type=str, default="{}", 
@@ -243,23 +247,29 @@ def main():
         except Exception as e:
             print(f"Warning: Prefix PI failed ({e}). Defaulting L_prefix_PI to 1.0")
 
-    # Phase 1: Find Baseline Boundary using CRA
-    cra_boundary = find_max_epsilon_binary_CRA(images, model, clean_indices, args, L)
-    if args.high_tau:
-        # if args.norm == 'inf':
-        #     paving_max = cra_boundary * 3.5
-        # else:
-        #     paving_max = cra_boundary * 3
-        if args.norm == 'inf':
-            paving_max = cra_boundary * 3.5
-        else:
-            paving_max = cra_boundary * 1.2
+    # Phase 1: Determine the Epsilon Boundary
+    if args.epsilon_max is not None:
+        paving_max = args.epsilon_max
+        print(f"\n[Phase 1] Using manual Epsilon Max: {paving_max:.4f}")
     else:
-        if args.norm == 'inf':
-            paving_max = cra_boundary * 1.5
+        # Fallback to binary search if no manual epsilon is provided
+        cra_boundary = find_max_epsilon_binary_CRA(images, model, clean_indices, args, L)
+        
+        # Apply your existing scaling logic based on high_tau and norm
+        if args.high_tau:
+            if args.norm == 'inf':
+                paving_max = cra_boundary * 3.5
+            else:
+                paving_max = cra_boundary * 1.2
         else:
-            paving_max = cra_boundary * 1.2
-    # Phase 2: Systematic Paving
+            if args.norm == 'inf':
+                paving_max = cra_boundary * 1.5
+            else:
+                paving_max = cra_boundary * 1.2
+        
+        print(f"\n[Phase 1] Computed Paving Max: {paving_max:.4f} (from CRA boundary {cra_boundary:.4f})")
+
+    # Phase 2: Systematic Paving (Exactly 20 points)
     epsilon_range = np.linspace(0.0001, paving_max, args.num_points)
     
 
