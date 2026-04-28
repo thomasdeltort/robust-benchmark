@@ -321,7 +321,8 @@ def vanilla_export(model1):
         if isinstance(p1, torch.nn.Conv2d) and is_parametrized(p1):
             new_conv = torch.nn.Conv2d(p1.in_channels, p1.out_channels, kernel_size=p1.kernel_size, stride=p1.stride, padding=p1.padding, padding_mode=p1.padding_mode,bias=(p1.bias is not None))
             new_conv.weight.data = p1.weight.data.clone()
-            new_conv.bias.data = p1.bias.data.clone() if p1.bias is not None else None
+            if p1.bias is not None:
+              new_conv.bias.data = p1.bias.data.clone()
             dict_modified_layers[n2] = new_conv
             #print("modified",n2,type(p1), type(new_conv),p1.in_channels, p1.out_channels, p1.kernel_size[0], p1.stride[0], p1.padding[0], p1.padding_mode,(p1.bias is not None))
             #setattr(model2, n2, new_conv)
@@ -431,66 +432,151 @@ def compute_linear_spectral_norm(weight):
         return torch.linalg.norm(weight, ord=2).item()
 
 # --- 2. The Dynamic Model Analyzer ---
+#
+#def compute_model_lipschitz(model, input_shape=(1, 3, 32, 32), device='cuda'):
+#    """
+#    Propagates a dummy input through the network to capture shapes, 
+#    then computes the product of spectral norms (rho) for all learnable layers.
+#    """
+#    model = model.to(device)
+#    model.eval()
+#    
+#    # Dummy input to propagate shapes
+#    current_input = torch.randn(input_shape).to(device)
+#    
+#    L_global = 1.0
+#    print(f"\n{'Layer':<40} | {'Type':<15} | {'Spectral Norm (rho)':<10}")
+#    print("-" * 80)
+#
+#    # We iterate over immediate children (assuming Sequential structure from your examples)
+#    for name, module in model.named_children():
+#        
+#        # 1. Capture Input Shape
+#        in_shape = current_input.shape
+#        
+#        # 2. Run Forward Pass to get Output Shape and Next Input
+#        with torch.no_grad():
+#            current_input = module(current_input)
+#        out_shape = current_input.shape
+#        
+#        layer_rho = 1.0 # Default (Activations, Pooling, etc.)
+#        
+#        # 3. Compute Spectral Norm based on Type
+#        if isinstance(module, nn.Conv2d): 
+#            # Extract parameters safely (handling tuples vs ints)
+#            s = module.stride if isinstance(module.stride, tuple) else (module.stride, module.stride)
+#            p = module.padding if isinstance(module.padding, tuple) else (module.padding, module.padding)
+#            d = module.dilation if isinstance(module.dilation, tuple) else (module.dilation, module.dilation)
+#            
+#            layer_rho = power_iteration_conv(
+#                weight=module.weight,
+#                input_shape=in_shape,
+#                output_shape=out_shape,
+#                stride=s,
+#                padding=p,
+#                dilation=d,
+#                groups=module.groups
+#            )
+#            
+#        elif isinstance(module, nn.Linear):
+#            layer_rho = compute_linear_spectral_norm(module.weight)
+#            
+#        # 4. Update Global
+#        L_global *= layer_rho
+#        
+#        # Log non-trivial layers (rho != 1.0) or specifically Conv/Linear
+#        if isinstance(module, (nn.Conv2d, nn.Linear)):
+#            print(f"{name:<40} | {module.__class__.__name__:<15} | {layer_rho:.4f}")
+#
+#    print("-" * 80)
+#    # print(f"Computed Global Lipschitz Constant: {L_global:.4f}")
+#    return L_global
+
+def get_lipschitz_of_module(module, current_input):
+    """
+    Recursively computes the Lipschitz constant (rho) of a module, handling 
+    sequential layers, standard layers, and custom residual blocks.
+    Returns: (rho, output_tensor)
+    """
+    # 1. Handle Convolutional Layers
+    if isinstance(module, (nn.Conv2d, torchlip.SpectralConv2d)):
+        out = module(current_input)
+        s = module.stride if isinstance(module.stride, tuple) else (module.stride, module.stride)
+        p = module.padding if isinstance(module.padding, tuple) else (module.padding, module.padding)
+        d = module.dilation if isinstance(module.dilation, tuple) else (module.dilation, module.dilation)
+        
+        rho = power_iteration_conv(
+            weight=module.weight, 
+            input_shape=current_input.shape, 
+            output_shape=out.shape, 
+            stride=s, padding=p, dilation=d, groups=module.groups
+        )
+        return rho, out
+        
+    # 2. Handle Linear Layers
+    elif isinstance(module, (nn.Linear, torchlip.SpectralLinear)):
+        out = module(current_input)
+        rho = compute_linear_spectral_norm(module.weight)
+        return rho, out
+        
+    # 3. Handle BasicBlockLipschitz (The Residual Fix)
+    elif isinstance(module, BasicBlockLipschitz):
+        # A. Main Path: conv1 -> bc1 -> act -> conv2 -> bc2
+        rho_c1, out1 = get_lipschitz_of_module(module.conv1, current_input)
+        out_act = module.act(module.bc1(out1))
+        rho_c2, out2 = get_lipschitz_of_module(module.conv2, out_act)
+        rho_main = rho_c1 * rho_c2
+        
+        # B. Skip Path
+        if isinstance(module.skipconv, nn.Identity):
+            rho_skip = 1.0
+            out_skip = current_input
+        else:
+            # Handle Downsampling skipconv (PixelUnshuffle -> Conv)
+            if isinstance(module.skipconv, nn.Sequential):
+                unshuffled = module.skipconv[0](current_input) # Unshuffle is 1-Lip
+                rho_skip, out_skip = get_lipschitz_of_module(module.skipconv[1], unshuffled)
+            else:
+                rho_skip, out_skip = get_lipschitz_of_module(module.skipconv, current_input)
+                
+        # C. Combine using alpha
+        alpha = torch.sigmoid(module.alpha).item()
+        rho_block = alpha * rho_main + (1.0 - alpha) * rho_skip
+        
+        # True output to pass to next layer
+        final_out = module(current_input)
+        return rho_block, final_out
+        
+    # 4. Handle Nested Sequentials (e.g., prefix and suffix lists)
+    elif isinstance(module, (nn.Sequential, torchlip.Sequential)):
+        rho_seq = 1.0
+        out = current_input
+        for child in module:
+            rho_child, out = get_lipschitz_of_module(child, out)
+            rho_seq *= rho_child
+        return rho_seq, out
+        
+    # 5. Handle Everything Else (Activations, Pooling, BatchCentering = 1.0)
+    else:
+        out = module(current_input)
+        return 1.0, out
+
 
 def compute_model_lipschitz(model, input_shape=(1, 3, 32, 32), device='cuda'):
     """
-    Propagates a dummy input through the network to capture shapes, 
-    then computes the product of spectral norms (rho) for all learnable layers.
+    Computes the global Lipschitz constant for hybrid verification, 
+    safely parsing parallel DAGs like ResNets.
     """
     model = model.to(device)
     model.eval()
     
-    # Dummy input to propagate shapes
     current_input = torch.randn(input_shape).to(device)
     
-    L_global = 1.0
-    print(f"\n{'Layer':<40} | {'Type':<15} | {'Spectral Norm (rho)':<10}")
-    print("-" * 80)
-
-    # We iterate over immediate children (assuming Sequential structure from your examples)
-    for name, module in model.named_children():
+    with torch.no_grad():
+        global_rho, _ = get_lipschitz_of_module(model, current_input)
         
-        # 1. Capture Input Shape
-        in_shape = current_input.shape
-        
-        # 2. Run Forward Pass to get Output Shape and Next Input
-        with torch.no_grad():
-            current_input = module(current_input)
-        out_shape = current_input.shape
-        
-        layer_rho = 1.0 # Default (Activations, Pooling, etc.)
-        
-        # 3. Compute Spectral Norm based on Type
-        if isinstance(module, nn.Conv2d): 
-            # Extract parameters safely (handling tuples vs ints)
-            s = module.stride if isinstance(module.stride, tuple) else (module.stride, module.stride)
-            p = module.padding if isinstance(module.padding, tuple) else (module.padding, module.padding)
-            d = module.dilation if isinstance(module.dilation, tuple) else (module.dilation, module.dilation)
-            
-            layer_rho = power_iteration_conv(
-                weight=module.weight,
-                input_shape=in_shape,
-                output_shape=out_shape,
-                stride=s,
-                padding=p,
-                dilation=d,
-                groups=module.groups
-            )
-            
-        elif isinstance(module, nn.Linear):
-            layer_rho = compute_linear_spectral_norm(module.weight)
-            
-        # 4. Update Global
-        L_global *= layer_rho
-        
-        # Log non-trivial layers (rho != 1.0) or specifically Conv/Linear
-        if isinstance(module, (nn.Conv2d, nn.Linear)):
-            print(f"{name:<40} | {module.__class__.__name__:<15} | {layer_rho:.4f}")
-
-    print("-" * 80)
-    # print(f"Computed Global Lipschitz Constant: {L_global:.4f}")
-    return L_global
-
+    print(f"Computed Global Lipschitz Constant: {global_rho:.4f}")
+    return global_rho
 
 def convert_lipschitz_constant(L_2, norm, input_dim):
     """
@@ -1259,8 +1345,13 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
     x_L and x_U here should represent the GLOBAL valid data range (e.g. 0 and 1), 
     NOT the local epsilon bounds. The function handles the epsilon intersection internally.
     """
-
-    device = next(model.parameters()).device
+    batch_size = args.batch_size
+    # Safer device detection
+    try:
+        device = next(model.parameters()).device
+    except StopIteration:
+        # If no parameters, use the device of the input tensor
+        device = images.device
     total_num_images = images.shape[0]
     model.eval()
     
@@ -1283,9 +1374,20 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
     robust_indices_list = []
 
     # --- Step 3: Setup BoundedModule ---
+    # Check if the model contains any residual blocks
+    has_residuals = any(isinstance(m, (BasicBlockLipschitz, BottleneckBlockLipschitz)) 
+                        for m in model.modules())
+    
+    # Determine the safest and most efficient conv_mode
+    # Matrix mode is mandatory for ResNets to handle the addition branches
+    selected_conv_mode = "matrix" if has_residuals else "patches"
+    
+    print(f"Structure check: {'Residuals detected' if has_residuals else 'Sequential architecture'}.")
+    print(f"Using auto_LiRPA conv_mode: {selected_conv_mode}")
+    
     # We disable "patches" mode to ensure stability with explicit bounds
     dummy_input = correct_images[0:1].to(device)
-    bounded_model = BoundedModule(model, dummy_input, bound_opts={"conv_mode": "patches"}, verbose=False)
+    bounded_model = BoundedModule(model, dummy_input, bound_opts={"conv_mode": selected_conv_mode}, verbose=False)
     # bounded_model = BoundedModule(model, dummy_input, verbose=False)
     bounded_model.eval()
 
@@ -1344,7 +1446,7 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
 
         bounded_input = BoundedTensor(batch_images, ptb)
         
-        num_classes = model[-1].out_features 
+        num_classes = 10 
         c = build_C(batch_targets.to("cpu"), num_classes).to(device)
 
         # --- Time the verification ---
@@ -1536,12 +1638,112 @@ def wrap_with_identity(suffix_model, z_k):
     
     # Prepend to the existing suffix
     return nn.Sequential(identity_layer, suffix_model)
+#
+#def compute_hybrid_vra(images, targets, model, eps_rescaled, clean_indices, device, classes, args, L_prefix=1.0, sdp=True):
+#    """
+#    Splits the model into a 1-Lipschitz prefix and standard suffix,
+#    then runs CROWN-based verification on the intermediate activations.
+#    Scales the intermediate epsilon using the provided L_prefix.
+#    """
+#    import time
+#    start_time = time.time()
+#    
+#    try:
+#        from deel import torchlip
+#    except ImportError:
+#        print("Warning: deel.torchlip not found. Hybrid splitting might fail if using torchlip layers.")
+#        import torch.nn as torchlip # fallback
+#        
+#    all_layers = list(model.children())
+#    split_idx = args.split_index
+#    
+#    if split_idx <= 0 or split_idx >= len(all_layers):
+#        raise ValueError(f"Invalid split_index: {split_idx}")
+#
+#    # Split the model
+#    f1_prefix = torchlip.Sequential(*all_layers[:split_idx]).to(device).eval()
+#    f2_suffix_lip = torchlip.Sequential(*all_layers[split_idx:]).to(device).eval()
+#    
+#    # Convert suffix for LiRPA (assuming vanilla_export is in project_utils)
+#    try:
+#        f2_suffix_vanilla = vanilla_export(f2_suffix_lip).to(device).eval()
+#    except NameError:
+#        print("Warning: vanilla_export not found. Passing raw suffix.")
+#        f2_suffix_vanilla = f2_suffix_lip
+#
+#    if str(args.norm) == 'inf':
+#        # Apply algebraic penalty ONCE to convert spec to backbone geometry
+#        input_dim = images[0].numel()
+#        eps_backbone = eps_rescaled * np.sqrt(input_dim) 
+#    else:
+#        eps_backbone = eps_rescaled
+#
+#    # Scale the epsilon for the intermediate layer propagation using the passed L_prefix
+#    intermediate_epsilon = float(eps_backbone * L_prefix)
+#    # print(f" -> Input Eps: {eps_rescaled:.4f} => Intermediate Eps (L_prefix={L_prefix:.4f}): {intermediate_epsilon:.4f}")
+#
+#    # Step 1: Lossless L2 propagation through prefix
+#    with torch.no_grad():
+#        z_k = f1_prefix(images.to(device))
+#
+#    # Step 2: Suffix Verification
+#    # --- PHASE 2: Symbolic Verification (Head) ---
+#    if str(args.norm) == 'inf':
+#        if sdp:
+#            # STRATEGY 1: Enclosing Ball (Coupled L2 Handover)
+#            # Pass the latent L2 ball radius directly to SDP-CROWN
+#            if not starts_with_affine(f2_suffix_vanilla):
+#                f2_suffix_sdp = wrap_with_identity(f2_suffix_vanilla, z_k)
+#            else:
+#                f2_suffix_sdp = f2_suffix_vanilla
+#                
+#            vra, t_v, idx_robust = compute_sdp_crown_vra(
+#                z_k, targets, f2_suffix_sdp, intermediate_epsilon, clean_indices, 
+#                device, classes, args, batch_size=1, return_robust_points=True
+#            )
+#        else:
+#            # STRATEGY 2: Norm Conversion (L-inf Box Handover)
+#            # Alpha-CROWN will treat intermediate_epsilon as the radius of an L-inf box 
+#            vra, t_v, idx_robust = compute_alphacrown_vra_and_time(
+#                z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args, 
+#                batch_size=args.batch_size, norm='inf', return_robust_points=True
+#            )
+#    else:
+#        if sdp:
+#            # Hybrid L2 (SDP-CROWN)
+#            groupsort = "GNP" in args.model or "Bjork" in args.model
+#            # import pdb; pdb.set_trace()
+#            # --- NEW FIX: Dynamically Inject Identity Layer ---
+#            if not starts_with_affine(f2_suffix_vanilla):
+#                # print("Suffix starts with an activation. Injecting Identity layer for SDP-CROWN...")
+#                f2_suffix_sdp = wrap_with_identity(f2_suffix_vanilla, z_k)
+#            else:
+#                # print("Suffix starts with an affine layer. No wrapper needed.")
+#                f2_suffix_sdp = f2_suffix_vanilla
+#            # --------------------------------------------------
+#            vra, t_v, idx_robust = compute_sdp_crown_vra(
+#                z_k, targets, f2_suffix_sdp, float(intermediate_epsilon), clean_indices, # <-- Scaled EPS
+#                device, classes, args, batch_size=1, return_robust_points=True, x_U=None, x_L=None, groupsort=groupsort
+#            )
+#        else:
+#            vra, t_v, idx_robust = compute_alphacrown_vra_and_time(
+#            z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args, # Scaled EPS
+#            batch_size=args.batch_size, norm=2, x_U=None, x_L=None, return_robust_points=True
+#        )
+#
+#    total_time = time.time() - start_time
+#    return vra, total_time, idx_robust
+
+import torch
+import torch.nn as nn
+import numpy as np
 
 def compute_hybrid_vra(images, targets, model, eps_rescaled, clean_indices, device, classes, args, L_prefix=1.0, sdp=True):
     """
     Splits the model into a 1-Lipschitz prefix and standard suffix,
     then runs CROWN-based verification on the intermediate activations.
     Scales the intermediate epsilon using the provided L_prefix.
+    The split_index now corresponds to the candidate split indices.
     """
     import time
     start_time = time.time()
@@ -1552,15 +1754,72 @@ def compute_hybrid_vra(images, targets, model, eps_rescaled, clean_indices, devi
         print("Warning: deel.torchlip not found. Hybrid splitting might fail if using torchlip layers.")
         import torch.nn as torchlip # fallback
         
-    all_layers = list(model.children())
-    split_idx = args.split_index
+    # ======================================================================
+    # 1. FLATTEN THE MODEL
+    # ======================================================================
+    is_resnet = "ResNet" in model.__class__.__name__
     
-    if split_idx <= 0 or split_idx >= len(all_layers):
-        raise ValueError(f"Invalid split_index: {split_idx}")
+    if is_resnet:
+        # Inline ResNet flattening to avoid scope/import errors in project_utils.py
+        all_layers = []
+        all_layers.append(model.conv1)
+        all_layers.append(model.bc1)
+        all_layers.append(model.act)
+        
+        if hasattr(model, 'pool1') and not isinstance(model.pool1, nn.Identity):
+            all_layers.append(model.pool1)
+            
+        if hasattr(model, 'layers'):
+            for layer_group in model.layers:
+                for block in layer_group:
+                    all_layers.append(block)
+                    
+        if hasattr(model, 'pool'):
+            all_layers.append(model.pool)
+            
+        all_layers.append(nn.Flatten(1))
+        
+        if hasattr(model, 'fc'):
+            all_layers.append(model.fc)
+    else:
+        all_layers = list(model.children())
 
-    # Split the model
-    f1_prefix = torchlip.Sequential(*all_layers[:split_idx]).to(device).eval()
-    f2_suffix_lip = torchlip.Sequential(*all_layers[split_idx:]).to(device).eval()
+    # ======================================================================
+    # 2. COMPUTE CANDIDATE INDICES
+    # ======================================================================
+    candidate_indices = [0]
+    for k in range(1, len(all_layers)):
+        layer_before = all_layers[k-1]
+        layer_after = all_layers[k]
+        
+        if is_resnet:
+            # ResNet candidate rules
+            if layer_before.__class__.__name__ in ["LirpaBatchCentering2D", "BasicBlockLipschitz"]:
+                candidate_indices.append(k)
+        else:
+            # Sequential/VGG candidate rules
+            if isinstance(layer_before, (nn.Conv2d, nn.Linear)):
+                if not isinstance(layer_after, (nn.Conv2d, nn.Linear, nn.Flatten)):
+                    candidate_indices.append(k)
+                    
+    if len(all_layers) not in candidate_indices:
+        candidate_indices.append(len(all_layers))
+
+    # ======================================================================
+    # 3. MAP ARG TO ACTUAL SPLIT INDEX
+    # ======================================================================
+    candidate_idx = args.split_index
+    
+    if candidate_idx < 0 or candidate_idx >= len(candidate_indices):
+        raise ValueError(f"Invalid candidate split_index: {candidate_idx}. Available candidates are 0 to {len(candidate_indices)-1}")
+
+    actual_split_idx = candidate_indices[candidate_idx]
+
+    # ======================================================================
+    # 4. SPLIT THE MODEL
+    # ======================================================================
+    f1_prefix = torchlip.Sequential(*all_layers[:actual_split_idx]).to(device).eval()
+    f2_suffix_lip = torchlip.Sequential(*all_layers[actual_split_idx:]).to(device).eval()
     
     # Convert suffix for LiRPA (assuming vanilla_export is in project_utils)
     try:
@@ -1578,18 +1837,14 @@ def compute_hybrid_vra(images, targets, model, eps_rescaled, clean_indices, devi
 
     # Scale the epsilon for the intermediate layer propagation using the passed L_prefix
     intermediate_epsilon = float(eps_backbone * L_prefix)
-    # print(f" -> Input Eps: {eps_rescaled:.4f} => Intermediate Eps (L_prefix={L_prefix:.4f}): {intermediate_epsilon:.4f}")
 
     # Step 1: Lossless L2 propagation through prefix
     with torch.no_grad():
         z_k = f1_prefix(images.to(device))
 
     # Step 2: Suffix Verification
-    # --- PHASE 2: Symbolic Verification (Head) ---
     if str(args.norm) == 'inf':
         if sdp:
-            # STRATEGY 1: Enclosing Ball (Coupled L2 Handover)
-            # Pass the latent L2 ball radius directly to SDP-CROWN
             if not starts_with_affine(f2_suffix_vanilla):
                 f2_suffix_sdp = wrap_with_identity(f2_suffix_vanilla, z_k)
             else:
@@ -1600,34 +1855,28 @@ def compute_hybrid_vra(images, targets, model, eps_rescaled, clean_indices, devi
                 device, classes, args, batch_size=1, return_robust_points=True
             )
         else:
-            # STRATEGY 2: Norm Conversion (L-inf Box Handover)
-            # Alpha-CROWN will treat intermediate_epsilon as the radius of an L-inf box 
             vra, t_v, idx_robust = compute_alphacrown_vra_and_time(
                 z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args, 
                 batch_size=args.batch_size, norm='inf', return_robust_points=True
             )
     else:
         if sdp:
-            # Hybrid L2 (SDP-CROWN)
             groupsort = "GNP" in args.model or "Bjork" in args.model
-            # import pdb; pdb.set_trace()
-            # --- NEW FIX: Dynamically Inject Identity Layer ---
+            
             if not starts_with_affine(f2_suffix_vanilla):
-                # print("Suffix starts with an activation. Injecting Identity layer for SDP-CROWN...")
                 f2_suffix_sdp = wrap_with_identity(f2_suffix_vanilla, z_k)
             else:
-                # print("Suffix starts with an affine layer. No wrapper needed.")
                 f2_suffix_sdp = f2_suffix_vanilla
-            # --------------------------------------------------
+                
             vra, t_v, idx_robust = compute_sdp_crown_vra(
-                z_k, targets, f2_suffix_sdp, float(intermediate_epsilon), clean_indices, # <-- Scaled EPS
+                z_k, targets, f2_suffix_sdp, float(intermediate_epsilon), clean_indices, 
                 device, classes, args, batch_size=1, return_robust_points=True, x_U=None, x_L=None, groupsort=groupsort
             )
         else:
             vra, t_v, idx_robust = compute_alphacrown_vra_and_time(
-            z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args, # Scaled EPS
-            batch_size=args.batch_size, norm=2, x_U=None, x_L=None, return_robust_points=True
-        )
+                z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args, 
+                batch_size=args.batch_size, norm=2, x_U=None, x_L=None, return_robust_points=True
+            )
 
     total_time = time.time() - start_time
     return vra, total_time, idx_robust
