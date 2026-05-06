@@ -171,7 +171,6 @@ def main():
     args = parser.parse_args()
 
     # 3. Parse the user input
-    # ast.literal_eval is safer than json.loads for single quotes
     user_overrides = ast.literal_eval(args.solvers_config)
     
     default_solvers = {
@@ -183,23 +182,18 @@ def main():
         "hybrid": False 
     }
 
-    # 4. OVERRIDE logic: Start with defaults, then update with user choices
     solvers = default_solvers.copy()
     solvers.update(user_overrides)
 
     print(f"Final Solvers: {solvers}")
 
-    # --- 1. SET ENVIRONMENT TO REDUCE FRAGMENTATION ---
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-    # torch.backends.cudnn.deterministic = True
     print("Processing model :", args.model_path)
-    # Setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     images, targets, classes = load_dataset_benchmark_auto(args)
     model = load_model(args, model_zoo, device)
     model.eval()
 
-    # Clean Accuracy Baseline
     with torch.no_grad():
         images, targets = images.to(device), targets.to(device)
         output = model(images)
@@ -208,7 +202,6 @@ def main():
         clean_acc = (len(clean_indices) / len(targets)) * 100
         print(f"Clean Accuracy: {clean_acc:.2f}% ({len(clean_indices)} samples)")
 
-    # --- Initialize Robustness Registry ---
     registry = RobustnessRegistry(
         model_name=args.model,
         norm=str(args.norm),
@@ -217,86 +210,91 @@ def main():
     )
     registry.register(0.0, "clean", clean_indices)
 
-    # --- 1. ORIGINAL LIPSCHITZ CONSTANT (Theoretical) ---
     L_2 = 1 
     L = convert_lipschitz_constant(L_2, str(args.norm), images[0].numel())
     print(f"Theoretical Lipschitz Constant (L): {L:.4f}")
 
-    # --- 2. NEW LIPSCHITZ CONSTANT (Power Iteration) ---
     print("\n[Setup] Computing Lipschitz Constant via Power Iteration...")
     if "mnist" in args.dataset.lower():
         inp_shape = (1, 1, 28, 28)
     elif "imagenette" in args.dataset.lower():
         inp_shape = (1, 3, 224, 224)
     else:
-        inp_shape = (1, 3, 32, 32) # CIFAR-10 fallback
-    try:
-        L_2_empirical = compute_model_lipschitz(model, input_shape=inp_shape, device=device)
-        L_PI = convert_lipschitz_constant(L_2_empirical, str(args.norm), images[0].numel())
-        print(f"Power Iteration Lipschitz Constant (L_PI): {L_PI:.4f}")
-    except Exception as e:
-        print(f"Warning: PI failed ({e}). Using Theoretical L.")
-        L_PI = L
+        inp_shape = (1, 3, 32, 32)
+    # --- NEW: Check for GNP model ---
+    is_gnp = "GNP" in args.model
+
+    if is_gnp:
+        print("GNP Model detected. Bypassing Power Iteration and enforcing L_PI = L.")
+        L_PI = L # L is already correctly scaled by norm above
+    else:
+        try:
+            L_2_empirical = compute_model_lipschitz(model, input_shape=inp_shape, device=device)
+            L_PI = convert_lipschitz_constant(L_2_empirical, str(args.norm), images[0].numel())
+            print(f"Power Iteration Lipschitz Constant (L_PI): {L_PI:.4f}")
+        except Exception as e:
+            print(f"Warning: PI failed ({e}). Using Theoretical L.")
+            L_PI = L
     
-    # --- 3. PREFIX LIPSCHITZ CONSTANT (For Hybrid) ---
     L_prefix_PI = 1.0
     if args.split_index > 0:
         try:
-            from deel import torchlip
-            all_layers = list(model.children())
-            f1_prefix_temp = torchlip.Sequential(*all_layers[:args.split_index]).to(device).eval()
-            L_prefix_empirical = compute_model_lipschitz(f1_prefix_temp, input_shape=inp_shape, device=device)
-            # We don't convert to norm here because the intermediate space is L2
-            L_prefix_PI = L_prefix_empirical 
-            print(f"Power Iteration Prefix L (L_prefix_PI): {L_prefix_PI:.4f}")
-            del f1_prefix_temp # Free memory
+            # Use the universal helper!
+            all_layers, candidate_indices = get_model_splits(model)
+            
+            # Map argument to the actual layer index
+            actual_split_idx = candidate_indices[args.split_index]
+
+            # --- NEW: Bypass PI if it is a GNP model ---
+            if is_gnp:
+                print(f"GNP Model detected. Bypassing Prefix Power Iteration for layer {actual_split_idx}, enforcing L_prefix_PI = 1.0")
+            else:
+                f1_prefix_temp = torchlip.Sequential(*all_layers[:actual_split_idx]).to(device).eval()
+                L_prefix_PI = compute_model_lipschitz(f1_prefix_temp, input_shape=inp_shape, device=device)
+                print(f"Power Iteration Prefix L (L_prefix_PI) for layer {actual_split_idx}: {L_prefix_PI:.4f}")
+                del f1_prefix_temp
+            
         except Exception as e:
             print(f"Warning: Prefix PI failed ({e}). Defaulting L_prefix_PI to 1.0")
 
-    # Phase 1: Determine the Epsilon Boundary
+    # For the global L
+    L_2_capped = min(1.0, float(L_PI)) # <--- Add the cap and float cast
+    L_PI = convert_lipschitz_constant(L_2_capped, str(args.norm), images[0].numel())
+    
+    # For the prefix L
+    L_prefix_PI = min(1.0, float(L_prefix_PI)) # <--- Add the cap and float cast
+
     if args.epsilon_max is not None:
         paving_max = args.epsilon_max
         print(f"\n[Phase 1] Using manual Epsilon Max: {paving_max:.4f}")
     else:
-        # Fallback to binary search if no manual epsilon is provided
         cra_boundary = find_max_epsilon_binary_CRA(images, model, clean_indices, args, L)
-        
-        # Apply your existing scaling logic based on high_tau and norm
         if args.high_tau:
-            if args.norm == 'inf':
-                paving_max = cra_boundary * 3.5
-            else:
-                paving_max = cra_boundary * 1.2
+            paving_max = cra_boundary * 3.5 if args.norm == 'inf' else cra_boundary * 1.2
         else:
-            if args.norm == 'inf':
-                paving_max = cra_boundary * 1.5
-            else:
-                paving_max = cra_boundary * 1.2
-        
+            paving_max = cra_boundary * 1.5 if args.norm == 'inf' else cra_boundary * 1.2
         print(f"\n[Phase 1] Computed Paving Max: {paving_max:.4f} (from CRA boundary {cra_boundary:.4f})")
 
-    # Phase 2: Systematic Paving (Exactly 20 points)
-    epsilon_range = np.linspace(0.0001, paving_max, args.num_points)
-    
+    # Phase 2: Systematic Paving
+    if args.num_points == 1:
+        # If only 1 point is requested, use exactly the epsilon_max
+        epsilon_range = [args.epsilon_max]
+    else:
+        epsilon_range = np.linspace(0.0001, paving_max, args.num_points)
 
-    print(f"\n[Phase 2] Paving Range [0, {paving_max:.4f}]")
-    print("        Stopping when Best Certified (Union) reaches 0%.")
-    
+    print(f"\n[Phase 2] Paving Range: {epsilon_range}")
 
-      
-    for eps in epsilon_range[args.start_step:10]:
+    # FIX: Use the whole range, don't slice [start_step:10] if you only have 1 point
+    current_range = epsilon_range[args.start_step:] if args.num_points > 1 else epsilon_range
+    
+    for eps in current_range:
         print(f"\n--- EVALUATING EPSILON: {eps:.5f} ---")
-        
-        # --- Pre-iteration Cleanup ---
         torch.cuda.empty_cache()
         gc.collect()
 
         eps_rescaled = eps / 0.225 if ("cifar" in args.dataset.lower() or "imagenette" in args.dataset.lower()) else eps
-        result_dict = {'epsilon': eps}
-        
+        result_dict = {'epsilon': eps, 'clean_acc': clean_acc}
         certified_indices_union = set()
-        
-        # --- Flag to prevent early stop on OOM ---
         oom_occurred = False 
 
         # 1. EMPIRICAL FILTER (AutoAttack)
@@ -312,7 +310,6 @@ def main():
             result_dict['aa'], result_dict['time_aa'] = 0.0, 0.0
 
         # 2. CERTIFIED METHODS
-        # --- A. Original Lipschitz CRA ---
         if solvers["cra"]:
             _, cra_val, t_cra, idx_cra = compute_certificates_CRA(
                 images, model, eps_rescaled, clean_indices, norm=str(args.norm), L=L, return_robust_points=True
@@ -322,184 +319,140 @@ def main():
             certified_indices_union.update(idx_cra.cpu().tolist())
             if cra_val <= 0: solvers["cra"] = False
         else:
-            result_dict['certificate'] = 0.0
-            result_dict['time_cra'] = 0.0
+            result_dict['certificate'], result_dict['time_cra'] = 0.0, 0.0
 
-        # --- B. New Power Iteration CRA ---
         if solvers["cra_pi"]:
             _, cra_pi_val, t_cra_pi, idx_cra_pi = compute_certificates_CRA(
                 images, model, eps_rescaled, clean_indices, norm=str(args.norm), L=L_PI, return_robust_points=True
             )
             result_dict['certificate_pi'], result_dict['time_cra_pi'] = cra_pi_val, t_cra_pi
             registry.register(eps, "certificate_pi", idx_cra_pi)
+            certified_indices_union.update(idx_cra_pi.cpu().tolist()) # Include in union
             if cra_pi_val <= 0: solvers["cra_pi"] = False
         else:
-            cra_pi_val = 0.0
-            result_dict['certificate_pi'] = 0.0
-            result_dict['time_cra_pi'] = 0.0
-
-        # --- Setup for Crown ---
-        x_L = torch.zeros((1, 1, 28, 28), device=device)
-        x_U = torch.ones((1, 1, 28, 28), device=device)
-        
-        if "cifar" in args.dataset.lower():
-            MEANS = torch.tensor([0.4914, 0.4822, 0.4465], device=device).view(1, 3, 1, 1)
-            STD = torch.tensor([0.225, 0.225, 0.225], device=device).view(1, 3, 1, 1)
-            x_L = ((0.0 - MEANS) / STD).expand(1, 3, 32, 32).contiguous()
-            x_U = ((1.0 - MEANS) / STD).expand(1, 3, 32, 32).contiguous()
-            
-        elif "imagenette" in args.dataset.lower():
-            MEANS = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
-            STD = torch.tensor([0.225, 0.225, 0.225], device=device).view(1, 3, 1, 1)
-            x_L = ((0.0 - MEANS) / STD).expand(1, 3, 224, 224).contiguous()
-            x_U = ((1.0 - MEANS) / STD).expand(1, 3, 224, 224).contiguous()
+            cra_pi_val, result_dict['certificate_pi'], result_dict['time_cra_pi'] = 0.0, 0.0, 0.0
 
         # --- Alpha-CROWN ---
         if solvers["alphacrown"]:
             try:
                 vra, t_v, idx_alpha = compute_alphacrown_vra_and_time(
                     images, targets, model, eps_rescaled, clean_indices, args, 
-                    batch_size=args.batch_size, norm=args.norm, x_U=x_U, x_L=x_L, return_robust_points=True
+                    batch_size=args.batch_size, norm=args.norm, return_robust_points=True
                 )
                 result_dict['lirpa_alphacrown'], result_dict['time_lirpa_alpha'] = vra, t_v
                 registry.register(eps, "alphacrown", idx_alpha)
                 certified_indices_union.update(idx_alpha.cpu().tolist())
-                print(f"    [Alpha-CROWN] Acc: {vra:.2f}%")
                 if vra <= 0: solvers["alphacrown"] = False
-
-            except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
-                if "out of memory" in str(e).lower():
-                    print(f"    ❌ [Alpha-CROWN] OOM at eps={eps:.5f}. Skipping.")
-                    torch.cuda.empty_cache()
-                    gc.collect()
-                    result_dict['lirpa_alphacrown'] = -1.0
-                    result_dict['time_lirpa_alpha'] = 0.0
-                    oom_occurred = True
-                else:
-                    raise e
+            except Exception as e:
+                print(f"Alpha-CROWN Failed: {e}")
+                oom_occurred = True
+                result_dict['lirpa_alphacrown'], result_dict['time_lirpa_alpha'] = -1.0, 0.0
         else:
-            result_dict['lirpa_alphacrown'] = 0.0
-            result_dict['time_lirpa_alpha'] = 0.0
+            result_dict['lirpa_alphacrown'], result_dict['time_lirpa_alpha'] = 0.0, 0.0
 
-        # --- Beta/SDP CROWN (Heavy) with OOM SKIP Logic ---
+        # --- Beta/SDP CROWN (Heavy) ---
         if solvers["heavy_certified"]:
-            # Clean cache before heavy op
             torch.cuda.empty_cache()
             gc.collect()
             
-            # swapped_model = None # Safety init
-            
             try:
                 if str(args.norm) == 'inf':
-                    # Beta-CROWN
                     v_acc, t_v, idx_beta = compute_alphabeta_vra_and_time(
                         args.dataset, args.model, args.model_path, eps, 
                         'cifar_l2_norm.yaml', clean_indices, total_samples=images.shape[0], return_robust_points=True
                     )
-                    
                     result_dict['lirpa_betacrown'], result_dict['time_lirpa_beta'] = v_acc, t_v
                     registry.register(eps, "betacrown", idx_beta)
                     certified_indices_union.update(idx_beta.cpu().tolist())
-                    result_dict['sdp'], result_dict['time_sdp'] = 0.0, 0.0
-                    print(f"    [Beta-CROWN]  Acc: {v_acc:.2f}%")
-                    
                     if v_acc <= 0: solvers["heavy_certified"] = False
-
                 else:
-                    # Assuming args.model is the string filename
-                    print(args.model)
-                    if "GNP" in args.model or "Bjork" in args.model:
-                        groupsort = True
-                    else:
-                        groupsort = False
+                    # --- UPDATED SDP LOGIC: Best of high_tau=False and True ---
+                    groupsort = True if ("GNP" in args.model or "Bjork" in args.model) else False
+                    orig_tau = args.high_tau
+                    
+                    # Run 1: high_tau=False
+                    args.high_tau = False
+                    sdp_acc_f, sdp_t_f, sdp_idx_f = 0.0, 0.0, torch.tensor([], device=device)
+                    try:
+                        sdp_acc_f, sdp_t_f, sdp_idx_f = compute_sdp_crown_vra(
+                            images, targets, model, float(eps_rescaled), clean_indices, 
+                            device, classes, args, batch_size=1, return_robust_points=True, groupsort=groupsort
+                        )
+                    except Exception as e: print(f"SDP (high_tau=False) OOM/Failed: {e}")
 
-                    v_acc, t_v, idx_sdp = compute_sdp_crown_vra(
-                        images, targets, model, float(eps_rescaled), clean_indices, 
-                        device, classes, args, batch_size=1, return_robust_points=True, x_U=x_U, x_L=x_L, groupsort=groupsort
-                    )
+                    # Run 2: high_tau=True
+                    args.high_tau = True
+                    sdp_acc_t, sdp_t_t, sdp_idx_t = 0.0, 0.0, torch.tensor([], device=device)
+                    try:
+                        sdp_acc_t, sdp_t_t, sdp_idx_t = compute_sdp_crown_vra(
+                            images, targets, model, float(eps_rescaled), clean_indices, 
+                            device, classes, args, batch_size=1, return_robust_points=True, groupsort=groupsort
+                        )
+                    except Exception as e: print(f"SDP (high_tau=True) OOM/Failed: {e}")
+
+                    # Pick the best result
+                    if sdp_acc_t > sdp_acc_f:
+                        v_acc, t_v, idx_sdp, best_tau = sdp_acc_t, sdp_t_t, sdp_idx_t, True
+                    else:
+                        v_acc, t_v, idx_sdp, best_tau = sdp_acc_f, sdp_t_f, sdp_idx_f, False
+
+                    args.high_tau = orig_tau # Restore
                     
                     result_dict['sdp'], result_dict['time_sdp'] = v_acc, t_v
                     registry.register(eps, "sdp", idx_sdp)
                     certified_indices_union.update(idx_sdp.cpu().tolist())
-                    result_dict['lirpa_betacrown'], result_dict['time_lirpa_beta'] = 0.0, 0.0
-                    print(f"    [SDP-CROWN]   Acc: {v_acc:.2f}%")
-                    
+                    print(f"    [SDP-CROWN] Best Acc: {v_acc:.2f}% (tau_high={best_tau})")
                     if v_acc <= 0: solvers["heavy_certified"] = False
 
-            except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
-                print(str(e))
-                    
-                # Log failure (-1.0) and prevent early stop
-                oom_occurred = True 
-                    
-                # Ensure CSV keys exist
-                if str(args.norm) == 'inf':
-                    result_dict['lirpa_betacrown'] = -1.0; result_dict['time_lirpa_beta'] = 0.0
-                    result_dict['sdp'] = 0.0; result_dict['time_sdp'] = 0.0
-                else:
-                    result_dict['sdp'] = -1.0; result_dict['time_sdp'] = 0.0
-                    result_dict['lirpa_betacrown'] = 0.0; result_dict['time_lirpa_beta'] = 0.0
-                    
+            except Exception as e:
+                print(f"Heavy solver failed: {e}")
+                oom_occurred = True
+                result_dict['sdp'] = -1.0
         else:
-            result_dict['lirpa_betacrown'] = 0.0; result_dict['time_lirpa_beta'] = 0.0
-            result_dict['sdp'] = 0.0; result_dict['time_sdp'] = 0.0
+            result_dict['sdp'], result_dict['time_sdp'] = 0.0, 0.0
+
         # --- HYBRID VERIFICATION ---
         if solvers["hybrid"] and args.split_index > 0:
-            torch.cuda.empty_cache()
-            gc.collect()
-            
             try:
-                # Add L_prefix_PI as the last argument
                 h_acc, t_h, idx_hybrid = compute_hybrid_vra(
                     images, targets, model, eps_rescaled, clean_indices, device, classes, args, L_prefix=L_prefix_PI, sdp=args.sdp
                 )
-                
                 result_dict['hybrid'], result_dict['time_hybrid'] = h_acc, t_h
                 registry.register(eps, "hybrid", idx_hybrid)
                 certified_indices_union.update(idx_hybrid.cpu().tolist())
-                print(f"    [Hybrid Split@{args.split_index}] Acc: {h_acc:.2f}%")
-                
                 if h_acc <= 0: solvers["hybrid"] = False
-                
-            except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
-                if "out of memory" in str(e).lower():
-                    print(f"    ❌ [Hybrid] OOM at eps={eps:.5f}. Skipping.")
-                    torch.cuda.empty_cache()
-                    gc.collect()
-                    result_dict['hybrid'] = -1.0
-                    result_dict['time_hybrid'] = 0.0
-                    oom_occurred = True
-                else:
-                    raise e
-        else:
-            result_dict['hybrid'] = 0.0
-            result_dict['time_hybrid'] = 0.0
-
-        # --- Final ---
+            except Exception as e:
+                print(f"Hybrid Failed: {e}")
+                oom_occurred = True
+                result_dict['hybrid'] = -1.0
+#        if solvers["hybrid"] and args.split_index > 0:
+#          # We no longer need the 'sdp=True/False' flag because the 
+#          # function now runs everything internally.
+#          h_acc, t_h, idx_hybrid = compute_hybrid_vra(
+#              images, targets, model, eps_rescaled, clean_indices, 
+#              device, classes, args, L_prefix=L_prefix_PI
+#          )
+#          result_dict['hybrid'] = h_acc
+#          result_dict['time_hybrid'] = t_h
+#          registry.register(eps, "hybrid", idx_hybrid)
+        # Finalize Epsilon iteration
         total_samples = images.shape[0]
         best_certified_acc = (len(certified_indices_union) / total_samples) * 100.0
-        
         result_dict['best_certified'] = best_certified_acc
         
-        if len(certified_indices_union) > 0:
-            union_tensor = torch.tensor(sorted(list(certified_indices_union)), dtype=torch.long)
-        else:
-            union_tensor = torch.tensor([], dtype=torch.long)
-            
+        union_tensor = torch.tensor(sorted(list(certified_indices_union)), dtype=torch.long)
         registry.register(eps, "best_certified", union_tensor)
-        print(f"  > Best Certified (Union): {best_certified_acc:.2f}% (PI-Cert: {cra_pi_val:.2f}%)")
+        print(f"  > Best Certified (Union): {best_certified_acc:.2f}%")
 
         registry.save()
         add_result_and_sort(result_dict, args.output_csv, norm=args.norm)
 
-        # Dynamic Stop Condition
-        # CRITICAL: Do NOT stop if an OOM occurred (we treat OOM as "unknown" rather than "0% robust")
         if best_certified_acc <= 0.0 and not oom_occurred:
-            print(f"  > Stopping Early: All certified methods reached 0% at epsilon {eps:.5f}.")
+            print(f"  > Stopping Early: Accuracy reached 0%.")
             break
 
     print("\nStudy Complete. Results saved to:", args.output_csv)
-    create_final_paper_plot_PI(f"{os.path.splitext(args.output_csv)[0]}_norm_{args.norm}.csv", f"{os.path.splitext(args.output_csv)[0]}_norm_{args.norm}.png")
+    # create_final_paper_plot_PI(f"{os.path.splitext(args.output_csv)[0]}_norm_{args.norm}.csv", f"{os.path.splitext(args.output_csv)[0]}_norm_{args.norm}.png")
 
 if __name__ == '__main__':
     main()

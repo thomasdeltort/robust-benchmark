@@ -263,7 +263,7 @@ def main(args):
     # Only save if --no_save is NOT present
     if not args.no_save:
         optimizer.eval() # Ensure we use averaged weights
-        LOCAL_MODEL_DIR = "./models_convlarge_bjork"
+        LOCAL_MODEL_DIR = "./models_cnna_gnp"
         os.makedirs(LOCAL_MODEL_DIR, exist_ok=True)
         base_filename = f"{args.model_name}_{run_id}_acc{val_acc:.2f}"
         

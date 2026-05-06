@@ -250,7 +250,7 @@ def main():
             print(f"  > SDP-CROWN VRA (high_tau=True):  {sdp_val_high:.2f}%")
         except Exception as e:
             print(f"  > ? [SDP-CROWN high_tau=True] Failed or OOM: {e}")
-
+        print('CHECKPOINT : ', sdp_val_low, ' low temp vs ', sdp_val_high, 'high temp')
         # 3. Take the maximum (best) metric
         sdp_val = max(sdp_val_low, sdp_val_high)
         print(f"  > SDP-CROWN VRA (Best):           {sdp_val:.2f}%")

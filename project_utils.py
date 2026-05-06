@@ -660,7 +660,7 @@ def add_result_and_sort(result_dict, base_csv_filepath, round_digits=3, norm='2'
     # --- 5. Add the new result and apply rounding ---
     processed_result = {}
     for key, value in result_dict.items():
-        if str(key).startswith('time_') and isinstance(value, (float, int)):
+        if (str(key).startswith('time_') or key == 'clean_acc') and isinstance(value, (float, int)):
             processed_result[key] = round(value, round_digits)
         else:
             processed_result[key] = value
@@ -1638,129 +1638,16 @@ def wrap_with_identity(suffix_model, z_k):
     
     # Prepend to the existing suffix
     return nn.Sequential(identity_layer, suffix_model)
-#
-#def compute_hybrid_vra(images, targets, model, eps_rescaled, clean_indices, device, classes, args, L_prefix=1.0, sdp=True):
-#    """
-#    Splits the model into a 1-Lipschitz prefix and standard suffix,
-#    then runs CROWN-based verification on the intermediate activations.
-#    Scales the intermediate epsilon using the provided L_prefix.
-#    """
-#    import time
-#    start_time = time.time()
-#    
-#    try:
-#        from deel import torchlip
-#    except ImportError:
-#        print("Warning: deel.torchlip not found. Hybrid splitting might fail if using torchlip layers.")
-#        import torch.nn as torchlip # fallback
-#        
-#    all_layers = list(model.children())
-#    split_idx = args.split_index
-#    
-#    if split_idx <= 0 or split_idx >= len(all_layers):
-#        raise ValueError(f"Invalid split_index: {split_idx}")
-#
-#    # Split the model
-#    f1_prefix = torchlip.Sequential(*all_layers[:split_idx]).to(device).eval()
-#    f2_suffix_lip = torchlip.Sequential(*all_layers[split_idx:]).to(device).eval()
-#    
-#    # Convert suffix for LiRPA (assuming vanilla_export is in project_utils)
-#    try:
-#        f2_suffix_vanilla = vanilla_export(f2_suffix_lip).to(device).eval()
-#    except NameError:
-#        print("Warning: vanilla_export not found. Passing raw suffix.")
-#        f2_suffix_vanilla = f2_suffix_lip
-#
-#    if str(args.norm) == 'inf':
-#        # Apply algebraic penalty ONCE to convert spec to backbone geometry
-#        input_dim = images[0].numel()
-#        eps_backbone = eps_rescaled * np.sqrt(input_dim) 
-#    else:
-#        eps_backbone = eps_rescaled
-#
-#    # Scale the epsilon for the intermediate layer propagation using the passed L_prefix
-#    intermediate_epsilon = float(eps_backbone * L_prefix)
-#    # print(f" -> Input Eps: {eps_rescaled:.4f} => Intermediate Eps (L_prefix={L_prefix:.4f}): {intermediate_epsilon:.4f}")
-#
-#    # Step 1: Lossless L2 propagation through prefix
-#    with torch.no_grad():
-#        z_k = f1_prefix(images.to(device))
-#
-#    # Step 2: Suffix Verification
-#    # --- PHASE 2: Symbolic Verification (Head) ---
-#    if str(args.norm) == 'inf':
-#        if sdp:
-#            # STRATEGY 1: Enclosing Ball (Coupled L2 Handover)
-#            # Pass the latent L2 ball radius directly to SDP-CROWN
-#            if not starts_with_affine(f2_suffix_vanilla):
-#                f2_suffix_sdp = wrap_with_identity(f2_suffix_vanilla, z_k)
-#            else:
-#                f2_suffix_sdp = f2_suffix_vanilla
-#                
-#            vra, t_v, idx_robust = compute_sdp_crown_vra(
-#                z_k, targets, f2_suffix_sdp, intermediate_epsilon, clean_indices, 
-#                device, classes, args, batch_size=1, return_robust_points=True
-#            )
-#        else:
-#            # STRATEGY 2: Norm Conversion (L-inf Box Handover)
-#            # Alpha-CROWN will treat intermediate_epsilon as the radius of an L-inf box 
-#            vra, t_v, idx_robust = compute_alphacrown_vra_and_time(
-#                z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args, 
-#                batch_size=args.batch_size, norm='inf', return_robust_points=True
-#            )
-#    else:
-#        if sdp:
-#            # Hybrid L2 (SDP-CROWN)
-#            groupsort = "GNP" in args.model or "Bjork" in args.model
-#            # import pdb; pdb.set_trace()
-#            # --- NEW FIX: Dynamically Inject Identity Layer ---
-#            if not starts_with_affine(f2_suffix_vanilla):
-#                # print("Suffix starts with an activation. Injecting Identity layer for SDP-CROWN...")
-#                f2_suffix_sdp = wrap_with_identity(f2_suffix_vanilla, z_k)
-#            else:
-#                # print("Suffix starts with an affine layer. No wrapper needed.")
-#                f2_suffix_sdp = f2_suffix_vanilla
-#            # --------------------------------------------------
-#            vra, t_v, idx_robust = compute_sdp_crown_vra(
-#                z_k, targets, f2_suffix_sdp, float(intermediate_epsilon), clean_indices, # <-- Scaled EPS
-#                device, classes, args, batch_size=1, return_robust_points=True, x_U=None, x_L=None, groupsort=groupsort
-#            )
-#        else:
-#            vra, t_v, idx_robust = compute_alphacrown_vra_and_time(
-#            z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args, # Scaled EPS
-#            batch_size=args.batch_size, norm=2, x_U=None, x_L=None, return_robust_points=True
-#        )
-#
-#    total_time = time.time() - start_time
-#    return vra, total_time, idx_robust
 
-import torch
-import torch.nn as nn
-import numpy as np
-
-def compute_hybrid_vra(images, targets, model, eps_rescaled, clean_indices, device, classes, args, L_prefix=1.0, sdp=True):
+def get_model_splits(model):
     """
-    Splits the model into a 1-Lipschitz prefix and standard suffix,
-    then runs CROWN-based verification on the intermediate activations.
-    Scales the intermediate epsilon using the provided L_prefix.
-    The split_index now corresponds to the candidate split indices.
+    Universally flattens a model and calculates valid candidate split indices.
+    Returns: (all_layers, candidate_indices)
     """
-    import time
-    start_time = time.time()
-    
-    try:
-        from deel import torchlip
-    except ImportError:
-        print("Warning: deel.torchlip not found. Hybrid splitting might fail if using torchlip layers.")
-        import torch.nn as torchlip # fallback
-        
-    # ======================================================================
-    # 1. FLATTEN THE MODEL
-    # ======================================================================
     is_resnet = "ResNet" in model.__class__.__name__
     
+    # --- 1. FLATTEN MODEL ---
     if is_resnet:
-        # Inline ResNet flattening to avoid scope/import errors in project_utils.py
         all_layers = []
         all_layers.append(model.conv1)
         all_layers.append(model.bc1)
@@ -1784,44 +1671,53 @@ def compute_hybrid_vra(images, targets, model, eps_rescaled, clean_indices, devi
     else:
         all_layers = list(model.children())
 
-    # ======================================================================
-    # 2. COMPUTE CANDIDATE INDICES
-    # ======================================================================
+    # --- 2. FIND CANDIDATE INDICES ---
     candidate_indices = [0]
-    for k in range(1, len(all_layers)):
-        layer_before = all_layers[k-1]
-        layer_after = all_layers[k]
-        
-        if is_resnet:
-            # ResNet candidate rules
-            if layer_before.__class__.__name__ in ["LirpaBatchCentering2D", "BasicBlockLipschitz"]:
+    if is_resnet:
+        for k in range(1, len(all_layers)):
+            if all_layers[k-1].__class__.__name__ in ["LirpaBatchCentering2D", "BasicBlockLipschitz"]:
                 candidate_indices.append(k)
-        else:
-            # Sequential/VGG candidate rules
+    else:
+        for k in range(1, len(all_layers)):
+            layer_before = all_layers[k-1]
+            layer_after = all_layers[k]
             if isinstance(layer_before, (nn.Conv2d, nn.Linear)):
                 if not isinstance(layer_after, (nn.Conv2d, nn.Linear, nn.Flatten)):
                     candidate_indices.append(k)
                     
     if len(all_layers) not in candidate_indices:
         candidate_indices.append(len(all_layers))
+        
+    return all_layers, candidate_indices
 
-    # ======================================================================
-    # 3. MAP ARG TO ACTUAL SPLIT INDEX
-    # ======================================================================
-    candidate_idx = args.split_index
+
+import torch
+import torch.nn as nn
+import numpy as np
+import time
+
+def compute_hybrid_vra(images, targets, model, eps_rescaled, clean_indices, device, classes, args, L_prefix=1.0, sdp=True):
+    import time
+    start_time = time.time()
     
-    if candidate_idx < 0 or candidate_idx >= len(candidate_indices):
-        raise ValueError(f"Invalid candidate split_index: {candidate_idx}. Available candidates are 0 to {len(candidate_indices)-1}")
+    try:
+        from deel import torchlip
+    except ImportError:
+        import torch.nn as torchlip 
+        
+    # Use the universal helper!
+    all_layers, candidate_indices = get_model_splits(model)
+    
+    if args.split_index < 0 or args.split_index >= len(candidate_indices):
+        raise ValueError(f"Invalid candidate split_index: {args.split_index}.")
 
-    actual_split_idx = candidate_indices[candidate_idx]
+    actual_split_idx = candidate_indices[args.split_index]
 
-    # ======================================================================
-    # 4. SPLIT THE MODEL
-    # ======================================================================
+    # Split the model
     f1_prefix = torchlip.Sequential(*all_layers[:actual_split_idx]).to(device).eval()
     f2_suffix_lip = torchlip.Sequential(*all_layers[actual_split_idx:]).to(device).eval()
     
-    # Convert suffix for LiRPA (assuming vanilla_export is in project_utils)
+    # Convert suffix for LiRPA
     try:
         f2_suffix_vanilla = vanilla_export(f2_suffix_lip).to(device).eval()
     except NameError:
@@ -1835,7 +1731,7 @@ def compute_hybrid_vra(images, targets, model, eps_rescaled, clean_indices, devi
     else:
         eps_backbone = eps_rescaled
 
-    # Scale the epsilon for the intermediate layer propagation using the passed L_prefix
+    # Scale the epsilon for the intermediate layer propagation
     intermediate_epsilon = float(eps_backbone * L_prefix)
 
     # Step 1: Lossless L2 propagation through prefix
@@ -1880,3 +1776,278 @@ def compute_hybrid_vra(images, targets, model, eps_rescaled, clean_indices, devi
 
     total_time = time.time() - start_time
     return vra, total_time, idx_robust
+
+#import torch
+#import torch.nn as nn
+#import numpy as np
+#
+#def compute_hybrid_vra(images, targets, model, eps_rescaled, clean_indices, device, classes, args, L_prefix=1.0, sdp=True):
+#    """
+#    Splits the model into a 1-Lipschitz prefix and standard suffix,
+#    then runs CROWN-based verification on the intermediate activations.
+#    Scales the intermediate epsilon using the provided L_prefix.
+#    The split_index now corresponds to the candidate split indices.
+#    """
+#    import time
+#    start_time = time.time()
+#    
+#    try:
+#        from deel import torchlip
+#    except ImportError:
+#        print("Warning: deel.torchlip not found. Hybrid splitting might fail if using torchlip layers.")
+#        import torch.nn as torchlip # fallback
+#        
+#    # ======================================================================
+#    # 1. FLATTEN THE MODEL
+#    # ======================================================================
+#    is_resnet = "ResNet" in model.__class__.__name__
+#    
+#    if is_resnet:
+#        # Inline ResNet flattening to avoid scope/import errors in project_utils.py
+#        all_layers = []
+#        all_layers.append(model.conv1)
+#        all_layers.append(model.bc1)
+#        all_layers.append(model.act)
+#        
+#        if hasattr(model, 'pool1') and not isinstance(model.pool1, nn.Identity):
+#            all_layers.append(model.pool1)
+#            
+#        if hasattr(model, 'layers'):
+#            for layer_group in model.layers:
+#                for block in layer_group:
+#                    all_layers.append(block)
+#                    
+#        if hasattr(model, 'pool'):
+#            all_layers.append(model.pool)
+#            
+#        all_layers.append(nn.Flatten(1))
+#        
+#        if hasattr(model, 'fc'):
+#            all_layers.append(model.fc)
+#    else:
+#        all_layers = list(model.children())
+#
+#    # ======================================================================
+#    # 2. COMPUTE CANDIDATE INDICES
+#    # ======================================================================
+#    candidate_indices = [0]
+#    for k in range(1, len(all_layers)):
+#        layer_before = all_layers[k-1]
+#        layer_after = all_layers[k]
+#        
+#        if is_resnet:
+#            # ResNet candidate rules
+#            if layer_before.__class__.__name__ in ["LirpaBatchCentering2D", "BasicBlockLipschitz"]:
+#                candidate_indices.append(k)
+#        else:
+#            # Sequential/VGG candidate rules
+#            if isinstance(layer_before, (nn.Conv2d, nn.Linear)):
+#                if not isinstance(layer_after, (nn.Conv2d, nn.Linear, nn.Flatten)):
+#                    candidate_indices.append(k)
+#                    
+#    if len(all_layers) not in candidate_indices:
+#        candidate_indices.append(len(all_layers))
+#
+#    # ======================================================================
+#    # 3. MAP ARG TO ACTUAL SPLIT INDEX
+#    # ======================================================================
+#    candidate_idx = args.split_index
+#    
+#    if candidate_idx < 0 or candidate_idx >= len(candidate_indices):
+#        raise ValueError(f"Invalid candidate split_index: {candidate_idx}. Available candidates are 0 to {len(candidate_indices)-1}")
+#
+#    actual_split_idx = candidate_indices[candidate_idx]
+#
+#    # ======================================================================
+#    # 4. SPLIT THE MODEL
+#    # ======================================================================
+#    f1_prefix = torchlip.Sequential(*all_layers[:actual_split_idx]).to(device).eval()
+#    f2_suffix_lip = torchlip.Sequential(*all_layers[actual_split_idx:]).to(device).eval()
+#    
+#    # Convert suffix for LiRPA (assuming vanilla_export is in project_utils)
+#    try:
+#        f2_suffix_vanilla = vanilla_export(f2_suffix_lip).to(device).eval()
+#    except NameError:
+#        print("Warning: vanilla_export not found. Passing raw suffix.")
+#        f2_suffix_vanilla = f2_suffix_lip
+#
+#    if str(args.norm) == 'inf':
+#        # Apply algebraic penalty ONCE to convert spec to backbone geometry
+#        input_dim = images[0].numel()
+#        eps_backbone = eps_rescaled * np.sqrt(input_dim) 
+#    else:
+#        eps_backbone = eps_rescaled
+#
+#    # Scale the epsilon for the intermediate layer propagation using the passed L_prefix
+#    intermediate_epsilon = float(eps_backbone * L_prefix)
+#
+#    # Step 1: Lossless L2 propagation through prefix
+#    with torch.no_grad():
+#        z_k = f1_prefix(images.to(device))
+#
+#    # Step 2: Suffix Verification
+#    if str(args.norm) == 'inf':
+#        if sdp:
+#            if not starts_with_affine(f2_suffix_vanilla):
+#                f2_suffix_sdp = wrap_with_identity(f2_suffix_vanilla, z_k)
+#            else:
+#                f2_suffix_sdp = f2_suffix_vanilla
+#                
+#            vra, t_v, idx_robust = compute_sdp_crown_vra(
+#                z_k, targets, f2_suffix_sdp, intermediate_epsilon, clean_indices, 
+#                device, classes, args, batch_size=1, return_robust_points=True
+#            )
+#        else:
+#            vra, t_v, idx_robust = compute_alphacrown_vra_and_time(
+#                z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args, 
+#                batch_size=args.batch_size, norm='inf', return_robust_points=True
+#            )
+#    else:
+#        if sdp:
+#            groupsort = "GNP" in args.model or "Bjork" in args.model
+#            
+#            if not starts_with_affine(f2_suffix_vanilla):
+#                f2_suffix_sdp = wrap_with_identity(f2_suffix_vanilla, z_k)
+#            else:
+#                f2_suffix_sdp = f2_suffix_vanilla
+#                
+#            vra, t_v, idx_robust = compute_sdp_crown_vra(
+#                z_k, targets, f2_suffix_sdp, float(intermediate_epsilon), clean_indices, 
+#                device, classes, args, batch_size=1, return_robust_points=True, x_U=None, x_L=None, groupsort=groupsort
+#            )
+#        else:
+#            vra, t_v, idx_robust = compute_alphacrown_vra_and_time(
+#                z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args, 
+#                batch_size=args.batch_size, norm=2, x_U=None, x_L=None, return_robust_points=True
+#            )
+#
+#    total_time = time.time() - start_time
+#    return vra, total_time, idx_robust
+#    
+    
+import pandas as pd
+import os
+import time
+import torch
+import torch.nn as nn
+import numpy as np
+
+def compute_hybrid_vra_comparison(images, targets, model, eps_rescaled, clean_indices, device, classes, args, L_prefix=1.0):
+    """
+    Hybrid Verification with Dynamic Solver Logging:
+    1. Splits model into Lipschitz prefix and LiRPA suffix.
+    2. Runs Alpha-CROWN, SDP-Low, and SDP-High on the suffix.
+    3. Saves results to results/flag_<model_name>.csv
+    4. Returns the maximum VRA of the three solvers.
+    """
+    start_time = time.time()
+    
+    # --- 1. DYNAMIC LOG FILENAME ---
+    # Extract filename from path (e.g., 'vanilla_VGG_T1.0.pth' -> 'vanilla_VGG_T1.0')
+    model_basename = os.path.splitext(os.path.basename(args.model_path))[0]
+    log_dir = "results/hybrid_flags"
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"flag_{model_basename}.csv")
+
+    # --- 2. MODEL SPLITTING ---
+    def get_layers(m):
+        layers = []
+        for child in m.children():
+            if isinstance(child, nn.Sequential): layers.extend(get_layers(child))
+            else: layers.append(child)
+        return layers
+
+    is_resnet = "ResNet" in model.__class__.__name__
+    all_layers = get_layers(model)
+    
+    # Candidate selection logic (split at non-linearities/blocks)
+    candidate_indices = [i for i, l in enumerate(all_layers) if not isinstance(l, (nn.Conv2d, nn.Linear))]
+    if not candidate_indices:
+        candidate_indices = [len(all_layers) // 2] # Fallback
+        
+    actual_split_idx = candidate_indices[min(args.split_index, len(candidate_indices)-1)]
+
+    f1_prefix = nn.Sequential(*all_layers[:actual_split_idx]).to(device).eval()
+    f2_suffix = nn.Sequential(*all_layers[actual_split_idx:]).to(device).eval()
+    
+    try:
+        f2_suffix_vanilla = vanilla_export(f2_suffix).to(device).eval()
+    except:
+        f2_suffix_vanilla = f2_suffix
+
+    # --- 3. EPSILON PROPAGATION (Algebraic Penalty) ---
+    input_dim = images[0].numel()
+    eps_l2 = eps_rescaled * np.sqrt(input_dim) if str(args.norm) == 'inf' else eps_rescaled
+    inter_eps = float(eps_l2 * L_prefix)
+
+    with torch.no_grad():
+        z_k = f1_prefix(images.to(device))
+
+    # --- 4. RUN SOLVERS ---
+    results_map = {}
+    indices_map = {}
+    groupsort = any(x in args.model for x in ["GNP", "Bjork"])
+
+    # Solver 1: Alpha-CROWN
+    try:
+        vra_a, _, idx_a = compute_alphacrown_vra_and_time(
+            z_k, targets, f2_suffix_vanilla, inter_eps, clean_indices, args, 
+            batch_size=args.batch_size, norm=2, return_robust_points=True
+        )
+        results_map['alpha'] = vra_a
+        indices_map['alpha'] = idx_a
+    except Exception as e:
+        print(f"  [Hybrid] Alpha-CROWN failed: {e}")
+        results_map['alpha'], indices_map['alpha'] = 0.0, torch.tensor([], device=device)
+
+    # Solver 2: SDP (Low Tau)
+    orig_tau = args.high_tau
+    try:
+        args.high_tau = False
+        vra_sl, _, idx_sl = compute_sdp_crown_vra(
+            z_k, targets, f2_suffix_vanilla, inter_eps, clean_indices, 
+            device, classes, args, batch_size=1, return_robust_points=True, groupsort=groupsort
+        )
+        results_map['sdp_low'] = vra_sl
+        indices_map['sdp_low'] = idx_sl
+    except Exception as e:
+        print(f"  [Hybrid] SDP Low failed: {e}")
+        results_map['sdp_low'], indices_map['sdp_low'] = 0.0, torch.tensor([], device=device)
+
+    # Solver 3: SDP (High Tau)
+    try:
+        args.high_tau = True
+        vra_sh, _, idx_sh = compute_sdp_crown_vra(
+            z_k, targets, f2_suffix_vanilla, inter_eps, clean_indices, 
+            device, classes, args, batch_size=1, return_robust_points=True, groupsort=groupsort
+        )
+        results_map['sdp_high'] = vra_sh
+        indices_map['sdp_high'] = idx_sh
+    except Exception as e:
+        print(f"  [Hybrid] SDP High failed: {e}")
+        results_map['sdp_high'], indices_map['sdp_high'] = 0.0, torch.tensor([], device=device)
+
+    args.high_tau = orig_tau # Restore global arg state
+
+    # --- 5. LOG TO CSV ---
+    best_vra = max(results_map.values())
+    log_entry = {
+        'model': model_basename,
+        'epsilon_input': args.eps if hasattr(args, 'eps') else "paving",
+        'inter_eps': inter_eps,
+        'split_idx': actual_split_idx,
+        'alpha_vra': results_map['alpha'],
+        'sdp_low_vra': results_map['sdp_low'],
+        'sdp_high_vra': results_map['sdp_high'],
+        'winner': max(results_map, key=results_map.get),
+        'best_vra': best_vra
+    }
+    
+    df_log = pd.DataFrame([log_entry])
+    df_log.to_csv(log_file, mode='a', header=not os.path.exists(log_file), index=False)
+
+    # --- 6. RETURN BEST RESULTS ---
+    best_key = max(results_map, key=results_map.get)
+    best_indices = indices_map[best_key]
+
+    return best_vra, (time.time() - start_time), best_indices
