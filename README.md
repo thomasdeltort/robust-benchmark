@@ -63,4 +63,8 @@ python main.py \
 
 If hybrid=True, then you have to give the --split_index parameter. In the paper we used 1 for ConvLarge and 3 for VGG. 
 
+In order to compare the conventional with our groupsort2 reformulation, you can run :
 
+```bash
+./compare_reformulations_paper.sh
+```
