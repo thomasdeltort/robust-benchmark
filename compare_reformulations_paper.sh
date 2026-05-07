@@ -3,7 +3,7 @@
 # Exit immediately if a command exits with a non-zero status
 set -e
 
-CSV_FILE="results_paper/alpha_crown_paper_results.csv"
+CSV_FILE="comparison_reformulation.csv"
 
 echo "Starting ALPHA-CROWN evaluation for all models..."
 echo "Results will be appended to: $CSV_FILE"
