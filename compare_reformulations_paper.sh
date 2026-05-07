@@ -23,4 +23,3 @@ python compare_reformulations_paper.py \
     --dataset mnist \
     --model_path "models_paper/vanilla_ConvSmall_MNIST_1_LIP_GNP_mnist_tau_a250.0_T0.4_bs64_lr0.001_eps0.5_medium_1765202236_acc0.91.pth" \
     --csv_name $CSV_FILE
-fely stored in $CSV_FILE."
