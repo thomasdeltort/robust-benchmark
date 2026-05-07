@@ -121,7 +121,86 @@ class GroupSort2Optimized(nn.Module):
         return sorted_pairs.view(N, C, H, W)
 
     
+class GroupSort2Conventional(nn.Module):
+    """
+    Applies GroupSort specifically on the channel dimension using classic max.
+    
+    It permutes the input from (N, C, ...) to (N, ..., C), applies the 
+    sort logic so that pairs (c_2k, c_2k+1) are sorted using torch.max and 
+    the identity min(a,b) = -max(-a,-b) to avoid alpha-CROWN compilation bugs, 
+    and then restores the original layout.
+    """
+    def __init__(self, axis=1):
+        super(GroupSort2Conventional, self).__init__()
+        self.axis = axis
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # 1. Permute to Channel Last
+        # We assume the channel is at self.axis (usually 1).
+        # We move that axis to the very end (-1).
+        dims = list(range(x.dim()))
+        # Remove the channel axis from its current spot and append to end
+        channel_dim = dims.pop(self.axis) 
+        dims.append(channel_dim)
+        
+        # permute returns a view, but we usually need contiguous memory for reshaping
+        x_permuted = x.permute(dims).contiguous()
+        
+        # Capture the shape after permutation: (N, D1, D2, ..., C)
+        permuted_shape = x_permuted.shape
+        batch_size = permuted_shape[0]
+        num_channels = permuted_shape[-1]
+        
+        if num_channels % 2 != 0:
+             raise ValueError(
+                f"The number of channels must be even, but got {num_channels} "
+                f"for input shape {x.shape}."
+            )
+
+        # 2. Flatten for the sorting logic
+        # We flatten everything except batch. Since Channel is now last,
+        # adjacent elements in this flattened view correspond to adjacent channels.
+        x_flat = x_permuted.reshape(batch_size, -1)
+
+        # --- Sort Logic (Max-Only Formulation) ---
+        
+        # Group into pairs. 
+        # Because we are Channel Last, the last dim is C.
+        # This reshaping groups (c0, c1), (c2, c3), etc.
+        reshaped_x = x_flat.reshape(batch_size, -1, 2)
+        
+        # Slicing separates the pairs
+        x1s = reshaped_x[..., 0]
+        x2s = reshaped_x[..., 1]
+        
+        # 1. Compute Max directly
+        y_max = torch.max(x1s, x2s)
+        
+        # 2. Compute Min using the identity: min(a, b) = -max(-a, -b)
+        # This bypasses the alpha-CROWN bug with torch.min
+        y_min = -torch.max(-x1s, -x2s)
+        
+        # Stack back together: [min, max]
+        sorted_pairs = torch.stack((y_min, y_max), dim=2)
+        sorted_flat = sorted_pairs.reshape(batch_size, -1)
+        
+        # --- End Logic ---
+
+        # 3. Restore Shape
+        
+        # First reshape back to the permuted shape (N, ..., C)
+        output_permuted = sorted_flat.reshape(permuted_shape)
+        
+        # Finally, permute back to Channel First (N, C, ...)
+        # We need to calculate the inverse permutation indices
+        inv_dims = list(range(x.dim()))
+        # Move the last dim (which is now channels) back to self.axis
+        last_dim = inv_dims.pop(-1)
+        inv_dims.insert(self.axis, last_dim)
+        
+        output = output_permuted.permute(inv_dims)
+        
+        return output
 
 def MNIST_MLP():
 	model = nn.Sequential(
