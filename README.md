@@ -61,4 +61,6 @@ python main.py \
   --solvers_config "{'aa': False, 'cra': False, 'cra_pi': False, 'heavy_certified': False}"
 ```
 
+If hybrid=True, then you have to give the --split_index parameter. In the paper we used 1 for ConvLarge and 3 for VGG. 
+
 
