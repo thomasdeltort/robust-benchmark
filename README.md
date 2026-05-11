@@ -14,8 +14,8 @@ git clone https://github.com/thomasdeltort/robust-benchmark.git
 cd robust-benchmark
 
 # 2. Clone the required verification solvers into the project root
-git clone https://github.com/thomasdeltort/SDP-CROWN.git
-git clone https://github.com/thomasdeltort/alpha-beta-CROWN.git
+git clone https://anonymous.4open.science/r/SDP-CROWN-9D8C.git
+git clone https://anonymous.4open.science/r/alpha-beta-CROWN-4EBF.git
 
 # 3. Create and activate the conda environment
 cd alpha-beta-crown
