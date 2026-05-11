@@ -1,0 +1,7 @@
+deel-torchlip
+orthogonium
+torchattacks
+matplotlib
+seaborn
+appdirs
+graphviz
