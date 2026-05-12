@@ -53,7 +53,7 @@ Run the command like this :
 python main.py \
   --dataset cifar10 \
   --model CNNA_CIFAR10_1_LIP_Bjork \
-  --model_path ./models/models/vanilla_CNNA_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T1.0_bs256_lr0.0003_1776931197_acc0.64.pth \
+  --model_path ./models/vanilla_CNNA_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T1.0_bs256_lr0.0003_1776931197_acc0.64.pth \
   --norm 2 \
   --num_points 1 \
   --epsilon_max 0.03 \
