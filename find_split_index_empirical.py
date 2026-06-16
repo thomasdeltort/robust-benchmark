@@ -228,10 +228,11 @@ def profile_true_vras(args, model_zoo):
         # --- ALPHA-CROWN ---
         print("   -> Executing Alpha-CROWN...")
         try:
-            vra_alpha, _, _ = compute_alphacrown_vra_and_time(
-                z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args,
-                batch_size=args.batch_size, norm=2, x_U=None, x_L=None, return_robust_points=True
-            )
+#            vra_alpha, _, _ = compute_alphacrown_vra_and_time(
+#                z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args,
+#                batch_size=args.batch_size, norm=2, x_U=None, x_L=None, return_robust_points=True
+#            )
+             vra_alpha=0
         except torch.cuda.OutOfMemoryError:
             print(f"\n[!] OOM ERROR: Alpha-CROWN ran out of memory at Layer {k}.")
             print("--> Stopping evaluation early. Previous data is already saved.")

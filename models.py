@@ -248,28 +248,7 @@ def CIFAR10_ConvDeep():
     )
     return model
 
-# class CIFAR10_ConvLarge(nn.Module):
-#     def __init__(self):
-#         super(CIFAR10_ConvLarge, self).__init__()
-#         self.conv1 = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, stride=1, padding=1)
-#         self.conv2 = nn.Conv2d(in_channels=32, out_channels=32, kernel_size=4, stride=2, padding=1)
-#         self.conv3 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1)
-#         self.conv4 = nn.Conv2d(in_channels=64, out_channels=64, kernel_size=4, stride=2, padding=1)
-#         self.flatten = nn.Flatten()
-#         self.fc1 = nn.Linear(in_features=64*8*8, out_features=512)
-#         self.fc2 = nn.Linear(in_features=512, out_features=512)
-#         self.fc3 = nn.Linear(in_features=512, out_features=10)
 
-#     def forward(self, x):
-#         x = torch.relu(self.conv1(x))
-#         x = torch.relu(self.conv2(x))
-#         x = torch.relu(self.conv3(x))
-#         x = torch.relu(self.conv4(x))
-#         x = self.flatten(x)
-#         x = torch.relu(self.fc1(x))
-#         x = torch.relu(self.fc2(x))
-#         x = self.fc3(x)
-#         return x
 def CIFAR10_ConvLarge():
     """
     Creates the CIFAR10_ConvLarge model using nn.Sequential.
@@ -299,225 +278,437 @@ def CIFAR10_ConvLarge():
 # These models correspond to the lipschitz version of all the model architectures from Wang et al. (2021) & Leino et al. (2021)
 # This version uses ReLU as the activation function.
 
+#def MLP_MNIST_1_LIP():
+#    """
+#    Model: MLP_1_LIP (MNIST)
+#    Structure: Linear(784, 100) -> ReLU -> Linear(100, 100) -> ReLU -> Linear(100, 10)
+#    """
+#    model = torchlip.Sequential(
+#        nn.Flatten(),
+#        torchlip.SpectralLinear(784, 100),
+#        nn.ReLU(),
+#        torchlip.SpectralLinear(100, 100),
+#        nn.ReLU(),
+#        torchlip.SpectralLinear(100, 10)
+#    )
+#    return model
+#
+#def ConvSmall_MNIST_1_LIP():
+#    """
+#    Model: ConvSmall_1_LIP (MNIST)
+#    Structure: Conv(1, 16, 4, 2, 1) -> ReLU -> Conv(16, 32, 4, 2, 1) -> ReLU -> Linear(1568, 100) -> ReLU -> Linear(100, 10)
+#    """
+#    model = torchlip.Sequential(
+#        torchlip.SpectralConv2d(in_channels=1, out_channels=16, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
+#        nn.ReLU(),
+#        torchlip.SpectralConv2d(in_channels=16, out_channels=32, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
+#        nn.ReLU(),
+#        nn.Flatten(),
+#        torchlip.SpectralLinear(32 * 7 * 7, 100), # 1568 input features
+#        nn.ReLU(),
+#        torchlip.SpectralLinear(100, 10)
+#    )
+#    return model
+#
+#def ConvLarge_MNIST_1_LIP():
+#    """
+#    Model: ConvLarge_1_LIP (MNIST)
+#    Structure: Conv(1, 32, 3, 1, 1) -> ReLU -> Conv(32, 32, 4, 2, 1) -> ReLU -> Conv(32, 64, 3, 1, 1) -> ReLU ->
+#               Conv(64, 64, 4, 2, 1) -> ReLU -> Linear(3136, 512) -> ReLU -> Linear(512, 512) -> ReLU -> Linear(512, 10)
+#    """
+#    model = torchlip.Sequential(
+#        torchlip.SpectralConv2d(in_channels=1, out_channels=32, kernel_size=3, stride=1, padding=1, eps_bjorck=None),
+#        nn.ReLU(),
+#        torchlip.SpectralConv2d(in_channels=32, out_channels=32, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
+#        nn.ReLU(),
+#        torchlip.SpectralConv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1, eps_bjorck=None),
+#        nn.ReLU(),
+#        torchlip.SpectralConv2d(in_channels=64, out_channels=64, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
+#        nn.ReLU(),
+#        nn.Flatten(),
+#        torchlip.SpectralLinear(64 * 7 * 7, 512), # 3136 input features
+#        nn.ReLU(),
+#        torchlip.SpectralLinear(512, 512),
+#        nn.ReLU(),
+#        torchlip.SpectralLinear(512, 10)
+#    )
+#    return model
+#
+#def CNNA_CIFAR10_1_LIP():
+#    """
+#    Model: CNN-A_1_LIP (CIFAR-10)
+#    Structure: Conv(3, 16, 4, 2, 1) -> ReLU -> Conv(16, 32, 4, 2, 1) -> ReLU -> Linear(2048, 100) -> ReLU -> Linear(100, 10)
+#    """
+#    model = torchlip.Sequential(
+#        torchlip.SpectralConv2d(in_channels=3, out_channels=16, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
+#        nn.ReLU(),
+#        # GroupSort_General(),
+#        torchlip.SpectralConv2d(in_channels=16, out_channels=32, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
+#        nn.ReLU(),
+#        # GroupSort_General(),
+#        nn.Flatten(),
+#        torchlip.SpectralLinear(32 * 8 * 8, 100), # 2048 input features
+#        nn.ReLU(),
+#        # GroupSort_General(),
+#        torchlip.SpectralLinear(100, 10)
+#    )
+#    return model
+#
+#def CNNB_CIFAR10_1_LIP():
+#    """
+#    Model: CNN-B_1_LIP (CIFAR-10)
+#    Structure: Conv(3, 32, 5, 2, 0) -> ReLU -> Conv(32, 128, 4, 2, 1) -> ReLU -> Linear(6272, 250) -> ReLU -> Linear(250, 10)
+#    Note: The paper specifies Linear(8192, 250), which implies an 8x8 feature map before flattening (128*8*8=8192).
+#          However, the specified convolutional layers produce a 7x7 feature map (128*7*7=6272).
+#          This implementation follows the specified conv layers, resulting in 6272 input features.
+#    """
+#    model = torchlip.Sequential(
+#        torchlip.SpectralConv2d(in_channels=3, out_channels=32, kernel_size=5, stride=2, padding=0, eps_bjorck=None),
+#        nn.ReLU(),
+#        torchlip.SpectralConv2d(in_channels=32, out_channels=128, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
+#        nn.ReLU(),
+#        nn.Flatten(),
+#        torchlip.SpectralLinear(128 * 7 * 7, 250), # 6272 input features
+#        nn.ReLU(),
+#        torchlip.SpectralLinear(250, 10)
+#    )
+#    return model
+#
+#def CNNC_CIFAR10_1_LIP():
+#    """
+#    Model: CNN-C_1_LIP (CIFAR-10)
+#    Structure: Conv(3, 8, 4, 2, 0) -> ReLU -> Conv(8, 16, 4, 2, 0) -> ReLU -> Linear(576, 128) -> ReLU ->
+#               Linear(128, 64) -> ReLU -> Linear(64, 10)
+#    """
+#    model = torchlip.Sequential(
+#        torchlip.SpectralConv2d(in_channels=3, out_channels=8, kernel_size=4, stride=2, padding=0, eps_bjorck=None),
+#        nn.ReLU(),
+#        torchlip.SpectralConv2d(in_channels=8, out_channels=16, kernel_size=4, stride=2, padding=0, eps_bjorck=None),
+#        nn.ReLU(),
+#        nn.Flatten(),
+#        torchlip.SpectralLinear(16 * 6 * 6, 128), # 576 input features
+#        nn.ReLU(),
+#        torchlip.SpectralLinear(128, 64),
+#        nn.ReLU(),
+#        torchlip.SpectralLinear(64, 10)
+#    )
+#    return model
+#
+#def ConvSmall_CIFAR10_1_LIP():
+#    """
+#    Model: ConvSmall_1_LIP (CIFAR-10)
+#    Structure: Conv(3, 16, 4, 2, 0) -> ReLU -> Conv(16, 32, 4, 2, 0) -> ReLU -> Linear(1152, 100) -> ReLU -> Linear(100, 10)
+#    """
+#    model = torchlip.Sequential(
+#        torchlip.SpectralConv2d(in_channels=3, out_channels=16, kernel_size=4, stride=2, padding=0, eps_bjorck=None),
+#        nn.ReLU(),
+#        torchlip.SpectralConv2d(in_channels=16, out_channels=32, kernel_size=4, stride=2, padding=0, eps_bjorck=None),
+#        nn.ReLU(),
+#        nn.Flatten(),
+#        torchlip.SpectralLinear(32 * 6 * 6, 100), # 1152 input features
+#        nn.ReLU(),
+#        torchlip.SpectralLinear(100, 10)
+#    )
+#    return model
+#
+#def ConvDeep_CIFAR10_1_LIP():
+#    """
+#    Model: ConvDeep_1_LIP (CIFAR-10)
+#    Structure: Conv(3, 8, 4, 2, 1) -> ReLU -> Conv(8, 8, 3, 1, 1) -> ReLU -> Conv(8, 8, 3, 1, 1) -> ReLU ->
+#               Conv(8, 8, 4, 2, 1) -> ReLU -> Linear(512, 100) -> ReLU -> Linear(100, 10)
+#    """
+#    model = torchlip.Sequential(
+#        torchlip.SpectralConv2d(in_channels=3, out_channels=8, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
+#        nn.ReLU(),
+#        torchlip.SpectralConv2d(in_channels=8, out_channels=8, kernel_size=3, stride=1, padding=1, eps_bjorck=None),
+#        nn.ReLU(),
+#        torchlip.SpectralConv2d(in_channels=8, out_channels=8, kernel_size=3, stride=1, padding=1, eps_bjorck=None),
+#        nn.ReLU(),
+#        torchlip.SpectralConv2d(in_channels=8, out_channels=8, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
+#        nn.ReLU(),
+#        nn.Flatten(),
+#        torchlip.SpectralLinear(8 * 8 * 8, 100), # 512 input features
+#        nn.ReLU(),
+#        torchlip.SpectralLinear(100, 10)
+#    )
+#    return model
+#
+#def ConvLarge_CIFAR10_1_LIP():
+#    """
+#    Model: ConvLarge_1_LIP (CIFAR-10)
+#    Structure: Conv(3, 32, 3, 1, 1) -> ReLU -> Conv(32, 32, 4, 2, 1) -> ReLU -> Conv(32, 64, 3, 1, 1) -> ReLU ->
+#               Conv(64, 64, 4, 2, 1) -> ReLU -> Linear(4096, 512) -> ReLU -> Linear(512, 512) -> ReLU -> Linear(512, 10)
+#    """
+#    model = torchlip.Sequential(
+#        torchlip.SpectralConv2d(in_channels=3, out_channels=32, kernel_size=3, stride=1, padding=1, eps_bjorck=None),
+#        nn.ReLU(),
+#        torchlip.SpectralConv2d(in_channels=32, out_channels=32, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
+#        nn.ReLU(),
+#        torchlip.SpectralConv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1, eps_bjorck=None),
+#        nn.ReLU(),
+#        torchlip.SpectralConv2d(in_channels=64, out_channels=64, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
+#        nn.ReLU(),
+#        nn.Flatten(),
+#        torchlip.SpectralLinear(64 * 8 * 8, 512), # 4096 input features
+#        nn.ReLU(),
+#        torchlip.SpectralLinear(512, 512),
+#        nn.ReLU(),
+#        torchlip.SpectralLinear(512, 10)
+#    )
+#    return model
+#
+#def VGG13_1_LIP_CIFAR10():
+#    """
+#    Model: VGG13-like_1_LIP_Bjork (CIFAR-10)
+#    Structure matched to GNP version but with SpectralConv2d
+#    """
+#    model = torchlip.Sequential(
+#        # Block 1
+#        torchlip.SpectralConv2d(3, 64, 3, 1, 1, eps_bjorck=None),
+#        nn.ReLU(),
+#        torchlip.SpectralConv2d(64, 64, 3, 1, 1, eps_bjorck=None),
+#        nn.ReLU(),
+#        # Downsample
+#        torchlip.SpectralConv2d(64, 64, 3, 2, 1, eps_bjorck=None),
+#        nn.ReLU(),
+#
+#        # Block 2
+#        torchlip.SpectralConv2d(64, 128, 3, 1, 1, eps_bjorck=None),
+#        nn.ReLU(),
+#        torchlip.SpectralConv2d(128, 128, 3, 1, 1, eps_bjorck=None),
+#        nn.ReLU(),
+#        # Downsample
+#        torchlip.SpectralConv2d(128, 128, 3, 2, 1, eps_bjorck=None),
+#        nn.ReLU(),
+#
+#        # Block 3
+#        torchlip.SpectralConv2d(128, 256, 3, 1, 1, eps_bjorck=None),
+#        nn.ReLU(),
+#        torchlip.SpectralConv2d(256, 256, 3, 1, 1, eps_bjorck=None),
+#        nn.ReLU(),
+#        # Downsample
+#        torchlip.SpectralConv2d(256, 256, 3, 2, 1, eps_bjorck=None),
+#        nn.ReLU(),
+#
+#        # Classifier
+#        nn.Flatten(),
+#        torchlip.SpectralLinear(256 * 4 * 4, 512),
+#        nn.ReLU(),
+#        torchlip.SpectralLinear(512, 512),
+#        nn.ReLU(),
+#        torchlip.SpectralLinear(512, 10)
+#    )
+#    return model
+
+# ==========================================
+# MNIST MODELS
+# ==========================================
+
 def MLP_MNIST_1_LIP():
     """
     Model: MLP_1_LIP (MNIST)
-    Structure: Linear(784, 100) -> ReLU -> Linear(100, 100) -> ReLU -> Linear(100, 10)
+    Structure: Linear(784, 100) -> GroupSort -> Linear(100, 100) -> GroupSort -> Linear(100, 10)
     """
     model = torchlip.Sequential(
         nn.Flatten(),
-        torchlip.SpectralLinear(784, 100),
-        nn.ReLU(),
-        torchlip.SpectralLinear(100, 100),
-        nn.ReLU(),
-        torchlip.SpectralLinear(100, 10)
+        torchlip.SpectralLinear(784, 100, eps_bjorck=None),
+        GroupSort_General(),
+        torchlip.SpectralLinear(100, 100, eps_bjorck=None),
+        GroupSort_General(),
+        torchlip.SpectralLinear(100, 10, eps_bjorck=None)
     )
     return model
 
 def ConvSmall_MNIST_1_LIP():
     """
     Model: ConvSmall_1_LIP (MNIST)
-    Structure: Conv(1, 16, 4, 2, 1) -> ReLU -> Conv(16, 32, 4, 2, 1) -> ReLU -> Linear(1568, 100) -> ReLU -> Linear(100, 10)
+    Structure: Conv(1, 16, 4, 2, 1) -> GroupSort -> Conv(16, 32, 4, 2, 1) -> GroupSort -> Linear(1568, 100) -> GroupSort -> Linear(100, 10)
     """
     model = torchlip.Sequential(
         torchlip.SpectralConv2d(in_channels=1, out_channels=16, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         torchlip.SpectralConv2d(in_channels=16, out_channels=32, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         nn.Flatten(),
-        torchlip.SpectralLinear(32 * 7 * 7, 100), # 1568 input features
-        nn.ReLU(),
-        torchlip.SpectralLinear(100, 10)
+        torchlip.SpectralLinear(32 * 7 * 7, 100, eps_bjorck=None), # 1568 input features
+        GroupSort_General(),
+        torchlip.SpectralLinear(100, 10, eps_bjorck=None)
     )
     return model
 
 def ConvLarge_MNIST_1_LIP():
     """
     Model: ConvLarge_1_LIP (MNIST)
-    Structure: Conv(1, 32, 3, 1, 1) -> ReLU -> Conv(32, 32, 4, 2, 1) -> ReLU -> Conv(32, 64, 3, 1, 1) -> ReLU ->
-               Conv(64, 64, 4, 2, 1) -> ReLU -> Linear(3136, 512) -> ReLU -> Linear(512, 512) -> ReLU -> Linear(512, 10)
     """
     model = torchlip.Sequential(
         torchlip.SpectralConv2d(in_channels=1, out_channels=32, kernel_size=3, stride=1, padding=1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         torchlip.SpectralConv2d(in_channels=32, out_channels=32, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         torchlip.SpectralConv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         torchlip.SpectralConv2d(in_channels=64, out_channels=64, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         nn.Flatten(),
-        torchlip.SpectralLinear(64 * 7 * 7, 512), # 3136 input features
-        nn.ReLU(),
-        torchlip.SpectralLinear(512, 512),
-        nn.ReLU(),
-        torchlip.SpectralLinear(512, 10)
+        torchlip.SpectralLinear(64 * 7 * 7, 512, eps_bjorck=None), # 3136 input features
+        GroupSort_General(),
+        torchlip.SpectralLinear(512, 512, eps_bjorck=None),
+        GroupSort_General(),
+        torchlip.SpectralLinear(512, 10, eps_bjorck=None)
     )
     return model
+
+# ==========================================
+# CIFAR-10 MODELS
+# ==========================================
 
 def CNNA_CIFAR10_1_LIP():
     """
     Model: CNN-A_1_LIP (CIFAR-10)
-    Structure: Conv(3, 16, 4, 2, 1) -> ReLU -> Conv(16, 32, 4, 2, 1) -> ReLU -> Linear(2048, 100) -> ReLU -> Linear(100, 10)
     """
     model = torchlip.Sequential(
         torchlip.SpectralConv2d(in_channels=3, out_channels=16, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
-        nn.ReLU(),
-        # GroupSort_General(),
+        GroupSort_General(),
         torchlip.SpectralConv2d(in_channels=16, out_channels=32, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
-        nn.ReLU(),
-        # GroupSort_General(),
+        GroupSort_General(),
         nn.Flatten(),
-        torchlip.SpectralLinear(32 * 8 * 8, 100), # 2048 input features
-        nn.ReLU(),
-        # GroupSort_General(),
-        torchlip.SpectralLinear(100, 10)
+        torchlip.SpectralLinear(32 * 8 * 8, 100, eps_bjorck=None), # 2048 input features
+        GroupSort_General(),
+        torchlip.SpectralLinear(100, 10, eps_bjorck=None)
     )
     return model
 
 def CNNB_CIFAR10_1_LIP():
     """
     Model: CNN-B_1_LIP (CIFAR-10)
-    Structure: Conv(3, 32, 5, 2, 0) -> ReLU -> Conv(32, 128, 4, 2, 1) -> ReLU -> Linear(6272, 250) -> ReLU -> Linear(250, 10)
-    Note: The paper specifies Linear(8192, 250), which implies an 8x8 feature map before flattening (128*8*8=8192).
-          However, the specified convolutional layers produce a 7x7 feature map (128*7*7=6272).
-          This implementation follows the specified conv layers, resulting in 6272 input features.
     """
     model = torchlip.Sequential(
         torchlip.SpectralConv2d(in_channels=3, out_channels=32, kernel_size=5, stride=2, padding=0, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         torchlip.SpectralConv2d(in_channels=32, out_channels=128, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         nn.Flatten(),
-        torchlip.SpectralLinear(128 * 7 * 7, 250), # 6272 input features
-        nn.ReLU(),
-        torchlip.SpectralLinear(250, 10)
+        torchlip.SpectralLinear(128 * 7 * 7, 250, eps_bjorck=None), # 6272 input features
+        GroupSort_General(),
+        torchlip.SpectralLinear(250, 10, eps_bjorck=None)
     )
     return model
 
 def CNNC_CIFAR10_1_LIP():
     """
     Model: CNN-C_1_LIP (CIFAR-10)
-    Structure: Conv(3, 8, 4, 2, 0) -> ReLU -> Conv(8, 16, 4, 2, 0) -> ReLU -> Linear(576, 128) -> ReLU ->
-               Linear(128, 64) -> ReLU -> Linear(64, 10)
     """
     model = torchlip.Sequential(
         torchlip.SpectralConv2d(in_channels=3, out_channels=8, kernel_size=4, stride=2, padding=0, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         torchlip.SpectralConv2d(in_channels=8, out_channels=16, kernel_size=4, stride=2, padding=0, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         nn.Flatten(),
-        torchlip.SpectralLinear(16 * 6 * 6, 128), # 576 input features
-        nn.ReLU(),
-        torchlip.SpectralLinear(128, 64),
-        nn.ReLU(),
-        torchlip.SpectralLinear(64, 10)
+        torchlip.SpectralLinear(16 * 6 * 6, 128, eps_bjorck=None), # 576 input features
+        GroupSort_General(),
+        torchlip.SpectralLinear(128, 64, eps_bjorck=None),
+        GroupSort_General(),
+        torchlip.SpectralLinear(64, 10, eps_bjorck=None)
     )
     return model
 
 def ConvSmall_CIFAR10_1_LIP():
     """
     Model: ConvSmall_1_LIP (CIFAR-10)
-    Structure: Conv(3, 16, 4, 2, 0) -> ReLU -> Conv(16, 32, 4, 2, 0) -> ReLU -> Linear(1152, 100) -> ReLU -> Linear(100, 10)
     """
     model = torchlip.Sequential(
         torchlip.SpectralConv2d(in_channels=3, out_channels=16, kernel_size=4, stride=2, padding=0, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         torchlip.SpectralConv2d(in_channels=16, out_channels=32, kernel_size=4, stride=2, padding=0, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         nn.Flatten(),
-        torchlip.SpectralLinear(32 * 6 * 6, 100), # 1152 input features
-        nn.ReLU(),
-        torchlip.SpectralLinear(100, 10)
+        torchlip.SpectralLinear(32 * 6 * 6, 100, eps_bjorck=None), # 1152 input features
+        GroupSort_General(),
+        torchlip.SpectralLinear(100, 10, eps_bjorck=None)
     )
     return model
 
 def ConvDeep_CIFAR10_1_LIP():
     """
     Model: ConvDeep_1_LIP (CIFAR-10)
-    Structure: Conv(3, 8, 4, 2, 1) -> ReLU -> Conv(8, 8, 3, 1, 1) -> ReLU -> Conv(8, 8, 3, 1, 1) -> ReLU ->
-               Conv(8, 8, 4, 2, 1) -> ReLU -> Linear(512, 100) -> ReLU -> Linear(100, 10)
     """
     model = torchlip.Sequential(
         torchlip.SpectralConv2d(in_channels=3, out_channels=8, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         torchlip.SpectralConv2d(in_channels=8, out_channels=8, kernel_size=3, stride=1, padding=1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         torchlip.SpectralConv2d(in_channels=8, out_channels=8, kernel_size=3, stride=1, padding=1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         torchlip.SpectralConv2d(in_channels=8, out_channels=8, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         nn.Flatten(),
-        torchlip.SpectralLinear(8 * 8 * 8, 100), # 512 input features
-        nn.ReLU(),
-        torchlip.SpectralLinear(100, 10)
+        torchlip.SpectralLinear(8 * 8 * 8, 100, eps_bjorck=None), # 512 input features
+        GroupSort_General(),
+        torchlip.SpectralLinear(100, 10, eps_bjorck=None)
     )
     return model
 
 def ConvLarge_CIFAR10_1_LIP():
     """
     Model: ConvLarge_1_LIP (CIFAR-10)
-    Structure: Conv(3, 32, 3, 1, 1) -> ReLU -> Conv(32, 32, 4, 2, 1) -> ReLU -> Conv(32, 64, 3, 1, 1) -> ReLU ->
-               Conv(64, 64, 4, 2, 1) -> ReLU -> Linear(4096, 512) -> ReLU -> Linear(512, 512) -> ReLU -> Linear(512, 10)
     """
     model = torchlip.Sequential(
         torchlip.SpectralConv2d(in_channels=3, out_channels=32, kernel_size=3, stride=1, padding=1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         torchlip.SpectralConv2d(in_channels=32, out_channels=32, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         torchlip.SpectralConv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         torchlip.SpectralConv2d(in_channels=64, out_channels=64, kernel_size=4, stride=2, padding=1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         nn.Flatten(),
-        torchlip.SpectralLinear(64 * 8 * 8, 512), # 4096 input features
-        nn.ReLU(),
-        torchlip.SpectralLinear(512, 512),
-        nn.ReLU(),
-        torchlip.SpectralLinear(512, 10)
+        torchlip.SpectralLinear(64 * 8 * 8, 512, eps_bjorck=None), # 4096 input features
+        GroupSort_General(),
+        torchlip.SpectralLinear(512, 512, eps_bjorck=None),
+        GroupSort_General(),
+        torchlip.SpectralLinear(512, 10, eps_bjorck=None)
     )
     return model
 
 def VGG13_1_LIP_CIFAR10():
     """
     Model: VGG13-like_1_LIP_Bjork (CIFAR-10)
-    Structure matched to GNP version but with SpectralConv2d
     """
     model = torchlip.Sequential(
         # Block 1
         torchlip.SpectralConv2d(3, 64, 3, 1, 1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         torchlip.SpectralConv2d(64, 64, 3, 1, 1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         # Downsample
         torchlip.SpectralConv2d(64, 64, 3, 2, 1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
 
         # Block 2
         torchlip.SpectralConv2d(64, 128, 3, 1, 1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         torchlip.SpectralConv2d(128, 128, 3, 1, 1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         # Downsample
         torchlip.SpectralConv2d(128, 128, 3, 2, 1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
 
         # Block 3
         torchlip.SpectralConv2d(128, 256, 3, 1, 1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         torchlip.SpectralConv2d(256, 256, 3, 1, 1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
         # Downsample
         torchlip.SpectralConv2d(256, 256, 3, 2, 1, eps_bjorck=None),
-        nn.ReLU(),
+        GroupSort_General(),
 
         # Classifier
         nn.Flatten(),
-        torchlip.SpectralLinear(256 * 4 * 4, 512),
-        nn.ReLU(),
-        torchlip.SpectralLinear(512, 512),
-        nn.ReLU(),
-        torchlip.SpectralLinear(512, 10)
+        torchlip.SpectralLinear(256 * 4 * 4, 512, eps_bjorck=None),
+        GroupSort_General(),
+        torchlip.SpectralLinear(512, 512, eps_bjorck=None),
+        GroupSort_General(),
+        torchlip.SpectralLinear(512, 10, eps_bjorck=None)
     )
     return model
 
