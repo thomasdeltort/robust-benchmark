@@ -102,6 +102,23 @@ class GroupSort_General(nn.Module):
         output = output_permuted.permute(inv_dims)
         
         return output
+        
+class GroupSort2Conventional(nn.Module):
+    def forward(self, x):
+        original_shape = x.shape
+        batch_size = original_shape[0]
+        num_features = np.prod(original_shape[1:])
+        if num_features % 2 != 0: raise ValueError("Total features must be even.")
+        x_flat = x.reshape(batch_size, -1)
+        x_pairs = x_flat.reshape(batch_size, -1, 2)
+        a_tensor, b_tensor = torch.split(x_pairs, 1, dim=-1)
+        a = a_tensor.squeeze(-1)
+        b = b_tensor.squeeze(-1)
+        min_vals = -torch.max(-a, -b) 
+        max_vals = torch.max(a, b)   
+        sorted_pairs = torch.stack((min_vals, max_vals), dim=-1)
+        sorted_flat = sorted_pairs.reshape(batch_size, -1)
+        return sorted_flat.reshape(original_shape)
     
     
 class GroupSort2Optimized(nn.Module):

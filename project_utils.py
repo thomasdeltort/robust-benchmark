@@ -2385,3 +2385,13 @@ def compute_hybrid_vra_comparison(images, targets, model, eps_rescaled, clean_in
     best_indices = indices_map[best_key]
 
     return best_vra, (time.time() - start_time), best_indices
+    
+    def replace_groupsort_conventional(model):
+      """ 
+      Recursively replaces GroupSort_General with the Conventional variant.
+      """
+      for name, module in model.named_children():
+          if isinstance(module, GroupSort_General):
+              setattr(model, name, GroupSort2Conventional())
+          else:
+              replace_groupsort_conventional(module)

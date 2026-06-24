@@ -9,9 +9,9 @@ mkdir -p "$OUTPUT_DIR"
 # ConvLarge Models Only
 MODELS=(
 
-"vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T15.0_bs256_lr0.0001_1781373330_TestAcc0.77_TestCRA69.19.pth"
-"vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T15.0_bs256_lr0.0001_1781498785_TestAcc0.77_TestCRA69.06.pth"
-"vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T15.0_bs256_lr0.0001_1781499609_TestAcc0.76_TestCRA67.93.pth"
+#"vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T15.0_bs256_lr0.0001_1781373330_TestAcc0.77_TestCRA69.19.pth"
+#"vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T15.0_bs256_lr0.0001_1781498785_TestAcc0.77_TestCRA69.06.pth"
+#"vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T15.0_bs256_lr0.0001_1781499609_TestAcc0.76_TestCRA67.93.pth"
 "vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T15.0_bs256_lr0.0001_1781500413_TestAcc0.76_TestCRA67.84.pth"
 "vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T15.0_bs256_lr0.0001_1781501221_TestAcc0.77_TestCRA68.41.pth"
 
@@ -22,21 +22,18 @@ MODELS=(
 "vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T0.5_bs256_lr0.0001_1781457029_TestAcc0.64_TestCRA62.82.pth"
 "vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T0.5_bs256_lr0.0001_1781457846_TestAcc0.64_TestCRA62.97.pth"
 
-#### BE CAREFULL WE HAVE TO CHANGE THE MODEL DIR FOR BJORK
+##########
 
-#"vanilla_ConvLarge_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T45.0_bs256_lr0.0003_1777049688_acc0.81.pth"
-#"vanilla_ConvLarge_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T45.0_bs256_lr0.0003_1779908077_TestAcc0.80_TestCRA62.67.pth"
-#"vanilla_ConvLarge_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T45.0_bs256_lr0.0003_1779910109_TestAcc0.81_TestCRA64.58.pth"
-#"vanilla_ConvLarge_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T45.0_bs256_lr0.0003_1779912145_TestAcc0.80_TestCRA63.20.pth"
-#"vanilla_ConvLarge_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T45.0_bs256_lr0.0003_1779914206_TestAcc0.81_TestCRA64.22.pth"
-#
-#
-#"vanilla_ConvLarge_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T0.6_bs256_lr0.0003_1777019976_acc0.67.pth"
-#"vanilla_ConvLarge_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T0.6_bs256_lr0.0003_1779899991_TestAcc0.66_TestCRA65.37.pth"
-#"vanilla_ConvLarge_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T0.6_bs256_lr0.0003_1779902008_TestAcc0.67_TestCRA66.25.pth"
-#"vanilla_ConvLarge_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T0.6_bs256_lr0.0003_1779904020_TestAcc0.66_TestCRA64.84.pth"
-#"vanilla_ConvLarge_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T0.6_bs256_lr0.0003_1779906055_TestAcc0.66_TestCRA65.66.pth"
+# ATTENTION CHANGER LE REPO VOIR SCRIPT MNIST 2 !!!
 
+##########
+
+
+#"vanilla_ConvLarge_CIFAR10_1_LIP_cifar10_tau_a250.0_T2.0_bs256_lr0.0003_1781634791_TestAcc0.73_TestCRA70.92.pth"
+#"vanilla_ConvLarge_CIFAR10_1_LIP_cifar10_tau_a250.0_T2.0_bs256_lr0.0003_1781822715_TestAcc0.67_TestCRA65.99.pth"
+#"vanilla_ConvLarge_CIFAR10_1_LIP_cifar10_tau_a250.0_T2.0_bs256_lr0.0003_1781825085_TestAcc0.67_TestCRA65.22.pth"
+#"vanilla_ConvLarge_CIFAR10_1_LIP_cifar10_tau_a250.0_T2.0_bs256_lr0.0003_1781827510_TestAcc0.67_TestCRA65.40.pth"
+#"vanilla_ConvLarge_CIFAR10_1_LIP_cifar10_tau_a250.0_T2.0_bs256_lr0.0003_1781829864_TestAcc0.67_TestCRA65.30.pth"
 
 
 )

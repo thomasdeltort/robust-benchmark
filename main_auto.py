@@ -163,6 +163,8 @@ def main():
     parser.add_argument('--start_step', default=1, type=int, help='starting index of the epsilon scale')
     
     parser.add_argument('--epsilon_max', type=float, default=None, help='Manually set the maximum epsilon for paving. If None, it is computed via binary search.')
+    parser.add_argument('--use_conventional_groupsort', action='store_true', 
+                        help='If set, recursively replaces GroupSort_General with GroupSort2Conventional')
     
     # 2. Accept the config as a string
     parser.add_argument('--solvers_config', type=str, default="{}", 
@@ -192,6 +194,15 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     images, targets, classes = load_dataset_benchmark_auto(args)
     model = load_model(args, model_zoo, device)
+    
+    # --- NEW LOGIC: Replace GroupSort if requested ---
+    if args.use_conventional_groupsort:
+        print("\n--- PREPARING MODEL ---")
+        print("Replacing GroupSort_General with GroupSort2Conventional...")
+        replace_groupsort_conventional(model)
+        
+    # Ensure model is on the right device and in eval mode after potential modification
+    model.to(device)
     model.eval()
 
     with torch.no_grad():
