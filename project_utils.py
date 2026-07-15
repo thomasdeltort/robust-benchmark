@@ -1728,6 +1728,13 @@ def compute_alphacrown_vra_and_time(
 
     print(f"Verifying {len(correct_images)} samples in {num_batches} batches (Starting from batch {start_batch+1})...")
 
+
+    if args.use_conventional_groupsort:
+        jitter = 1e-7
+    else:
+        jitter = 0.0
+    
+
     # --- Step 4: Batch Loop ---
     for i in range(start_batch, num_batches):
         start_idx = i * batch_size
@@ -1739,12 +1746,12 @@ def compute_alphacrown_vra_and_time(
 
         # --- A. Prepare Global Domain Bounds (0 to 1) ---
         if x_L is not None:
-            batch_global_L = x_L.expand(current_bs, *x_L.shape[1:]).contiguous()
+            batch_global_L = x_L.expand(current_bs, *x_L.shape[1:]).contiguous() - jitter
         else:
             batch_global_L = None
             
         if x_U is not None:
-            batch_global_U = x_U.expand(current_bs, *x_U.shape[1:]).contiguous()
+            batch_global_U = x_U.expand(current_bs, *x_U.shape[1:]).contiguous() + jitter
         else:
             batch_global_U = None
 
@@ -1752,11 +1759,12 @@ def compute_alphacrown_vra_and_time(
         if batch_global_L is not None and batch_global_U is not None:
             batch_images = torch.max(torch.min(batch_images, batch_global_U), batch_global_L)
 
+        
         # --- C. Define Perturbation Constraints ---
         if norm == 'inf' or norm == float('inf'):
             if batch_global_L is not None and batch_global_U is not None:
-                ptb_L = torch.max(batch_global_L, batch_images - epsilon)
-                ptb_U = torch.min(batch_global_U, batch_images + epsilon)
+                ptb_L = torch.max(batch_global_L, batch_images - epsilon) - jitter
+                ptb_U = torch.min(batch_global_U, batch_images + epsilon) + jitter
                 ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon, x_L=ptb_L, x_U=ptb_U)
             else:
                 ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon)
@@ -2386,12 +2394,12 @@ def compute_hybrid_vra_comparison(images, targets, model, eps_rescaled, clean_in
 
     return best_vra, (time.time() - start_time), best_indices
     
-    def replace_groupsort_conventional(model):
-      """ 
-      Recursively replaces GroupSort_General with the Conventional variant.
-      """
-      for name, module in model.named_children():
-          if isinstance(module, GroupSort_General):
-              setattr(model, name, GroupSort2Conventional())
-          else:
-              replace_groupsort_conventional(module)
+def replace_groupsort_conventional(model):
+  """ 
+    Recursively replaces GroupSort_General with the Conventional variant.
+  """
+  for name, module in model.named_children():
+    if isinstance(module, GroupSort_General):
+      setattr(model, name, GroupSort2Conventional())
+    else:
+      replace_groupsort_conventional(module)

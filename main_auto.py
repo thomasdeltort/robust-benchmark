@@ -35,6 +35,7 @@ model_zoo = {
         "ConvSmall_CIFAR10_1_LIP": ConvSmall_CIFAR10_1_LIP if 'ConvSmall_CIFAR10_1_LIP' in globals() else None,
         "ConvDeep_CIFAR10_1_LIP": ConvDeep_CIFAR10_1_LIP if 'ConvDeep_CIFAR10_1_LIP' in globals() else None,
         "ConvLarge_CIFAR10_1_LIP": ConvLarge_CIFAR10_1_LIP if 'ConvLarge_CIFAR10_1_LIP' in globals() else None,
+        "VGG13_1_LIP_CIFAR10" : VGG13_1_LIP_GNP_CIFAR10 if 'VGG13_1_LIP_CIFAR10' in globals() else None,
 
         # --- 1-Lipschitz models (GNP technique) ---
         "MLP_MNIST_1_LIP_GNP": MLP_MNIST_1_LIP_GNP if 'MLP_MNIST_1_LIP_GNP' in globals() else None,
@@ -200,6 +201,7 @@ def main():
         print("\n--- PREPARING MODEL ---")
         print("Replacing GroupSort_General with GroupSort2Conventional...")
         replace_groupsort_conventional(model)
+        print(model)
         
     # Ensure model is on the right device and in eval mode after potential modification
     model.to(device)
