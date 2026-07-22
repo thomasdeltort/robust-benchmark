@@ -228,11 +228,10 @@ def profile_true_vras(args, model_zoo):
         # --- ALPHA-CROWN ---
         print("   -> Executing Alpha-CROWN...")
         try:
-#            vra_alpha, _, _ = compute_alphacrown_vra_and_time(
-#                z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args,
-#                batch_size=args.batch_size, norm=2, x_U=None, x_L=None, return_robust_points=True
-#            )
-             vra_alpha=0
+            vra_alpha, _, _ = compute_alphacrown_vra_and_time(
+                z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args,
+                batch_size=args.batch_size, norm=2, x_U=None, x_L=None, return_robust_points=True
+            )
         except torch.cuda.OutOfMemoryError:
             print(f"\n[!] OOM ERROR: Alpha-CROWN ran out of memory at Layer {k}.")
             print("--> Stopping evaluation early. Previous data is already saved.")
@@ -251,34 +250,49 @@ def profile_true_vras(args, model_zoo):
 
         if args.sdp:
             # --- SDP-CROWN ---
-            groupsort = True if ("GNP" in args.model or "Bjork" in args.model) else False
-
             if not starts_with_affine(f2_suffix_vanilla):
                 f2_suffix_sdp = wrap_with_identity(f2_suffix_vanilla, z_k)
             else:
                 f2_suffix_sdp = f2_suffix_vanilla
 
             print("   -> Executing SDP-CROWN...")
+            
+            # --- UPDATED SDP LOGIC: Best of high_tau=False and True ---
+            groupsort = True if ("GNP" in args.model or "Bjork" in args.model) else False
+            orig_tau = args.high_tau
+            
+            # Run 1: high_tau=False
+            args.high_tau = False
+            sdp_acc_f, sdp_t_f, sdp_idx_f = 0.0, 0.0, torch.tensor([], device=device)
             try:
-                vra_sdp, _, _ = compute_sdp_crown_vra(
+                sdp_acc_f, sdp_t_f, sdp_idx_f = compute_sdp_crown_vra(
                     z_k, targets, f2_suffix_sdp, float(intermediate_epsilon), clean_indices, 
                     device, classes, args, batch_size=1, return_robust_points=True, x_U=None, x_L=None, groupsort=groupsort
                 )
-            except torch.cuda.OutOfMemoryError:
-                print(f"\n[!] OOM ERROR: SDP-CROWN ran out of memory at Layer {k}.")
-                print("--> Stopping evaluation early. Previous data is already saved.")
-                torch.cuda.empty_cache()
-                break
-            except RuntimeError as e:
-                if "out of memory" in str(e).lower():
-                    print(f"\n[!] OOM ERROR: SDP-CROWN ran out of memory at Layer {k}.")
-                    print("--> Stopping evaluation early. Previous data is already saved.")
-                    torch.cuda.empty_cache()
-                    break
-                else:
-                    raise e
-                    
-            print(f"      SDP VRA:   {vra_sdp:.2f}%")
+            except Exception as e: 
+                print(f"SDP (high_tau=False) OOM/Failed: {e}")
+
+            # Run 2: high_tau=True
+            args.high_tau = True
+            sdp_acc_t, sdp_t_t, sdp_idx_t = 0.0, 0.0, torch.tensor([], device=device)
+            try:
+                sdp_acc_t, sdp_t_t, sdp_idx_t = compute_sdp_crown_vra(
+                    z_k, targets, f2_suffix_sdp, float(intermediate_epsilon), clean_indices, 
+                    device, classes, args, batch_size=1, return_robust_points=True, x_U=None, x_L=None, groupsort=groupsort
+                )
+            except Exception as e: 
+                print(f"SDP (high_tau=True) OOM/Failed: {e}")
+
+            # Pick the best result
+            if sdp_acc_t > sdp_acc_f:
+                v_acc, t_v, idx_sdp, best_tau = sdp_acc_t, sdp_t_t, sdp_idx_t, True
+            else:
+                v_acc, t_v, idx_sdp, best_tau = sdp_acc_f, sdp_t_f, sdp_idx_f, False
+
+            args.high_tau = orig_tau # Restore
+            
+            vra_sdp = v_acc
+            print(f"      SDP VRA:   {vra_sdp:.2f}% (tau_high={best_tau})")
             
         # Append data 
         alpha_vras.append(vra_alpha)

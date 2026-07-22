@@ -1,5 +1,7 @@
 import torch
 import numpy as np
+import traceback
+import sys
 import argparse
 import os
 import time
@@ -158,7 +160,7 @@ def main():
     parser.add_argument('--end', default=200, type=int, help='end index for the dataset')
     parser.add_argument('--lr_alpha', default=0.5, type=float, help='alpha learning rate')
     parser.add_argument('--lr_lambda', default=0.05, type=float, help='lambda learning rate')
-    parser.add_argument('--high_tau', default=False, type=bool, help='Training temperature high/low')
+    parser.add_argument('--high_tau', action='store_true', help='Training temperature high/low')
     parser.add_argument('--split_index', default=-1, type=int, help='Layer index to split the model for Hybrid verification. -1 disables hybrid.')
     parser.add_argument('--sdp', default=False, type=bool, help='If true, sdp verification used for hybrid')
     parser.add_argument('--start_step', default=1, type=int, help='starting index of the epsilon scale')
@@ -356,10 +358,37 @@ def main():
                 registry.register(eps, "alphacrown", idx_alpha)
                 certified_indices_union.update(idx_alpha.cpu().tolist())
                 if vra <= 0: solvers["alphacrown"] = False
+#            except Exception as e:
+#                print(f"Alpha-CROWN Failed: {e}")
+#                oom_occurred = True
+#                result_dict['lirpa_alphacrown'], result_dict['time_lirpa_alpha'] = -1.0, 0.0
             except Exception as e:
-                print(f"Alpha-CROWN Failed: {e}")
-                oom_occurred = True
-                result_dict['lirpa_alphacrown'], result_dict['time_lirpa_alpha'] = -1.0, 0.0
+                print("\n" + "="*60)
+                print("?? FATAL ERROR CAUGHT: FULL STACK TRACE BELOW ??")
+                print("="*60)
+                
+                # This forces Python to print every step of the call stack
+                traceback.print_exc(file=sys.stdout)
+                
+                print("-" * 60)
+                print("DEBUGGING INFO - TENSOR DEVICES AT TIME OF CRASH:")
+                print(f"Device targeted: {device}")
+                print(f"batch_images device: {batch_images.device}")
+                
+                if batch_global_L is not None:
+                    print(f"batch_global_L device: {batch_global_L.device}")
+                else:
+                    print("batch_global_L is None")
+                    
+                if batch_global_U is not None:
+                    print(f"batch_global_U device: {batch_global_U.device}")
+                else:
+                    print("batch_global_U is None")
+                    
+                print("="*60)
+                
+                # Stop the script immediately so you can read the output
+                raise SystemExit("Halting execution to inspect the trace.")
         else:
             result_dict['lirpa_alphacrown'], result_dict['time_lirpa_alpha'] = 0.0, 0.0
 
@@ -410,8 +439,14 @@ def main():
                         v_acc, t_v, idx_sdp, best_tau = sdp_acc_f, sdp_t_f, sdp_idx_f, False
 
                     args.high_tau = orig_tau # Restore
+                    # --- Maintain CSV Compatibility ---
+                    # 1. Existing float column (Total time spent on SDP phase)
+                    result_dict['time_sdp'] = sdp_t_f + sdp_t_t
                     
-                    result_dict['sdp'], result_dict['time_sdp'] = v_acc, t_v
+                    # 2. NEW optional columns (Breakdown for analysis)
+                    result_dict['time_sdp_f'] = sdp_t_f  # high_tau=False
+                    result_dict['time_sdp_t'] = sdp_t_t  # high_tau=True
+                    result_dict['sdp'] = v_acc
                     registry.register(eps, "sdp", idx_sdp)
                     certified_indices_union.update(idx_sdp.cpu().tolist())
                     print(f"    [SDP-CROWN] Best Acc: {v_acc:.2f}% (tau_high={best_tau})")
@@ -421,8 +456,14 @@ def main():
                 print(f"Heavy solver failed: {e}")
                 oom_occurred = True
                 result_dict['sdp'] = -1.0
+                result_dict['time_sdp'] = 0.0
+                result_dict['time_sdp_f'] = 0.0
+                result_dict['time_sdp_t'] = 0.0
         else:
-            result_dict['sdp'], result_dict['time_sdp'] = 0.0, 0.0
+            result_dict['sdp'] = 0.0
+            result_dict['time_sdp'] = 0.0
+            result_dict['time_sdp_f'] = 0.0
+            result_dict['time_sdp_t'] = 0.0
 
         # --- HYBRID VERIFICATION ---
         if solvers["hybrid"] and args.split_index > 0:

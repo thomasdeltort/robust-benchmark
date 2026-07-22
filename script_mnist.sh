@@ -106,7 +106,7 @@ for model_file in "${MODELS[@]}"; do
         --num_points 1 \
         --split_index 1 \
         --use_conventional_groupsort \
-        --solvers_config '{"aa": True, "cra": True, "cra_pi": False, "alphacrown": True, "heavy_certified": False, "hybrid": True}' ; then
+        --solvers_config '{"aa": True, "cra": True, "cra_pi": True, "alphacrown": True, "heavy_certified": False, "hybrid": True}' ; then
         echo "✅ Done. (Saved to $csv_name)"
     else
         echo "❌ Failed."
@@ -123,7 +123,7 @@ for model_file in "${MODELS[@]}"; do
         --num_points 1 \
         --split_index 1 \
         --use_conventional_groupsort \
-        --solvers_config '{"aa": True, "cra": True, "cra_pi": False, "alphacrown": True, "heavy_certified": False, "hybrid": True}' ; then
+        --solvers_config '{"aa": True, "cra": True, "cra_pi": True, "alphacrown": True, "heavy_certified": False, "hybrid": True}' ; then
         echo "✅ Done. (Saved to $csv_name)"
     else
         echo "❌ Failed."

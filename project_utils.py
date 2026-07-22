@@ -842,7 +842,7 @@ def add_result_and_sort(result_dict, base_csv_filepath, round_digits=3, norm='2'
     try:
         # Use 'w' to overwrite, but we have all previous data in all_data_dicts
         with open(csv_filepath, 'w', newline='') as file:
-            writer = csv.DictWriter(file, fieldnames=final_header)
+            writer = csv.DictWriter(file, fieldnames=final_header, extrasaction='ignore')
             writer.writeheader()
             writer.writerows(all_data_dicts)
         
@@ -1728,11 +1728,7 @@ def compute_alphacrown_vra_and_time(
 
     print(f"Verifying {len(correct_images)} samples in {num_batches} batches (Starting from batch {start_batch+1})...")
 
-
-    if args.use_conventional_groupsort:
-        jitter = 1e-7
-    else:
-        jitter = 0.0
+    jitter = 1e-7
     
 
     # --- Step 4: Batch Loop ---
@@ -1746,12 +1742,14 @@ def compute_alphacrown_vra_and_time(
 
         # --- A. Prepare Global Domain Bounds (0 to 1) ---
         if x_L is not None:
-            batch_global_L = x_L.expand(current_bs, *x_L.shape[1:]).contiguous() - jitter
+            batch_global_L = x_L.expand(current_bs, *x_L.shape[1:]).contiguous() 
+#            - jitter
         else:
             batch_global_L = None
             
         if x_U is not None:
-            batch_global_U = x_U.expand(current_bs, *x_U.shape[1:]).contiguous() + jitter
+            batch_global_U = x_U.expand(current_bs, *x_U.shape[1:]).contiguous() 
+#            + jitter
         else:
             batch_global_U = None
 
@@ -1769,7 +1767,13 @@ def compute_alphacrown_vra_and_time(
             else:
                 ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon)
         else:
-            ptb = PerturbationLpNorm(norm=norm, eps=epsilon, x_L=batch_global_L, x_U=batch_global_U)
+            if getattr(args, 'use_conventional_groupsort', False):
+                # For L2, we add jitter to the global domain bounds
+                safe_L = batch_global_L - jitter if batch_global_L is not None else None
+                safe_U = batch_global_U + jitter if batch_global_U is not None else None
+                ptb = PerturbationLpNorm(norm=norm, eps=epsilon, x_L=safe_L, x_U=safe_U)
+            else:
+                ptb = PerturbationLpNorm(norm=norm, eps=epsilon, x_L=batch_global_L, x_U=batch_global_U)
 
         bounded_input = BoundedTensor(batch_images, ptb)
         num_classes = 10 
