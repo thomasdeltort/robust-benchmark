@@ -314,7 +314,52 @@ from deel.torchlip import TauCrossEntropyLoss
 # ==========================================
 # 2. Helper Function: CRA Computation
 # ==========================================
-def compute_certificates_CRA(images, model, epsilon, correct_indices, norm='2', L=1, return_robust_points=False):
+#def compute_certificates_CRA(images, model, epsilon, correct_indices, norm='2', L=1, return_robust_points=False):
+#    if not isinstance(correct_indices, torch.Tensor):
+#        correct_indices = torch.tensor(correct_indices)
+#        
+#    correct_images = images[correct_indices]
+#    total_num_images = correct_images.shape[0]
+#
+#    if len(correct_images) == 0:
+#        empty_certs = torch.tensor([])
+#        if return_robust_points:
+#            return empty_certs, 0.0, 0.0, torch.tensor([])
+#        return empty_certs, 0.0, 0.0
+#
+#    device = next(model.parameters()).device 
+#    
+#    if device.type == 'cuda':
+#        torch.cuda.synchronize()
+#    start_time = time.time()
+#
+#    with torch.no_grad():
+#        values, _ = torch.topk(model(correct_images.to(device)), k=2)
+#
+#    if device.type == 'cuda':
+#        torch.cuda.synchronize()
+#    end_time = time.time()
+#    elapsed_time = end_time - start_time
+#
+#    if norm == '2':
+#        scale_certificate = np.sqrt(2)
+#    elif norm == 'inf':
+#        scale_certificate = 2.0
+#    else:
+#        raise ValueError(f"Unsupported norm: '{norm}'.")
+#
+#    certificates = (values[:, 0] - values[:, 1]) / (scale_certificate * L)
+#    is_robust_mask = (certificates >= epsilon).cpu()
+#    num_robust_points = torch.sum(is_robust_mask).item()
+#    cra = (num_robust_points / total_num_images) * 100.0
+#    time_per_img = elapsed_time / len(correct_indices)
+#
+#    if return_robust_points:
+#        robust_indices = correct_indices[is_robust_mask]
+#        return certificates.cpu(), cra, time_per_img, robust_indices
+#    
+#    return certificates.cpu(), cra, time_per_img
+def compute_certificates_CRA(images, model, epsilon, correct_indices, norm='2', L=1, return_robust_points=False, batch_size=32):
     if not isinstance(correct_indices, torch.Tensor):
         correct_indices = torch.tensor(correct_indices)
         
@@ -333,8 +378,16 @@ def compute_certificates_CRA(images, model, epsilon, correct_indices, norm='2', 
         torch.cuda.synchronize()
     start_time = time.time()
 
+    all_values = []
     with torch.no_grad():
-        values, _ = torch.topk(model(correct_images.to(device)), k=2)
+        # Batch the forward passes to prevent CUDA OOM
+        for i in range(0, total_num_images, batch_size):
+            batch_imgs = correct_images[i:i + batch_size].to(device)
+            logits = model(batch_imgs)
+            top2_vals, _ = torch.topk(logits, k=2)
+            all_values.append(top2_vals.cpu())
+
+    values = torch.cat(all_values, dim=0)
 
     if device.type == 'cuda':
         torch.cuda.synchronize()
@@ -349,16 +402,16 @@ def compute_certificates_CRA(images, model, epsilon, correct_indices, norm='2', 
         raise ValueError(f"Unsupported norm: '{norm}'.")
 
     certificates = (values[:, 0] - values[:, 1]) / (scale_certificate * L)
-    is_robust_mask = (certificates >= epsilon).cpu()
+    is_robust_mask = (certificates >= epsilon)
     num_robust_points = torch.sum(is_robust_mask).item()
     cra = (num_robust_points / total_num_images) * 100.0
     time_per_img = elapsed_time / len(correct_indices)
 
     if return_robust_points:
         robust_indices = correct_indices[is_robust_mask]
-        return certificates.cpu(), cra, time_per_img, robust_indices
+        return certificates, cra, time_per_img, robust_indices
     
-    return certificates.cpu(), cra, time_per_img
+    return certificates, cra, time_per_img
 
 # ==========================================
 # 3. Helper Class: HKR Loss

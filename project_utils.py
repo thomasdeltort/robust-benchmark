@@ -387,6 +387,75 @@ def preprocess_cifar(image, inception_preprocess=False, perturbation=False):
     else:
         return (image - rescaled_means) / rescaled_devs
 
+def prepare_imagenette_sdp(
+    target_dir="/lustre/fswork/projects/rech/syo/utf64nw/robust-benchmark/prepared_data/imagenette", 
+    num_samples=200
+):
+    x_path = os.path.join(target_dir, 'X_sdp.npy')
+    y_path = os.path.join(target_dir, 'y_sdp.npy')
+
+    # 1. Check if files already exist
+    if os.path.exists(x_path) and os.path.exists(y_path):
+        return
+
+    print(f"⚠️ Prepared Imagenette dataset not found at '{target_dir}'. Creating {num_samples}-sample balanced dataset...")
+    os.makedirs(target_dir, exist_ok=True)
+
+    # 2. Raw Imagenette dataset path (Jean Zay $WORK or local ./data/)
+    raw_data_dir = os.path.join(os.environ.get('WORK', './data'), 'imagenette2-320', 'val')
+    if not os.path.exists(raw_data_dir):
+        raise FileNotFoundError(f"Raw Imagenette validation set not found at '{raw_data_dir}'. Please download it first.")
+
+    # Convert images to 224x224 tensors in [0, 1] WITHOUT normalization yet
+    raw_transforms = v2.Compose([
+        v2.Resize(256),
+        v2.CenterCrop(224),
+        v2.ToImage(),
+        v2.ToDtype(torch.float32, scale=True)
+    ])
+
+    val_dataset = datasets.ImageFolder(raw_data_dir, transform=raw_transforms)
+    classes = 10
+    points_per_class = num_samples // classes  # 20 per class
+    class_counts = {i: 0 for i in range(classes)}
+
+    selected_images = []
+    selected_labels = []
+
+    # 3. Extract exactly 20 images per class
+    for img, label in val_dataset:
+        if class_counts[label] < points_per_class:
+            # Convert PyTorch (C, H, W) -> Numpy (H, W, C)
+            img_np = img.permute(1, 2, 0).numpy()
+            selected_images.append(img_np)
+            selected_labels.append(label)
+            class_counts[label] += 1
+
+        if len(selected_images) == num_samples:
+            break
+
+    # Stack into numpy arrays matching CIFAR format
+    X_sdp = np.array(selected_images, dtype=np.float32)  # Shape: (200, 224, 224, 3)
+    y_sdp = np.array(selected_labels, dtype=np.int64)    # Shape: (200,)
+
+    # Save arrays to target folder
+    np.save(x_path, X_sdp)
+    np.save(y_path, y_sdp)
+    print(f"✅ Successfully created and saved {num_samples} equilibrated Imagenette samples to '{target_dir}'.")
+
+def preprocess_imagenette(image, perturbation=False):
+    """
+    Preprocess Imagenette images and perturbations using ImageNet mean & std.
+    Input image shape: (N, H, W, C) in range [0, 1].
+    """
+    MEANS = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    
+    if perturbation:
+        return image / STD
+    else:
+        return (image - MEANS) / STD
+
 def load_dataset_benchmark(args):
     if "mnist" in args.dataset.lower():
         dataset = np.load('./prepared_data/mnist/X_sdp.npy')
@@ -406,31 +475,25 @@ def load_dataset_benchmark(args):
         classes = 10
         
     elif "imagenette" in args.dataset.lower():
-        # Load validation set directly from raw folders into memory
-        data_dir = os.path.join(os.environ.get('WORK', './data'), 'imagenette2-320', 'val')
+        target_dir = os.path.join(prepared_base_dir, 'imagenette')
         
-        mean = [0.485, 0.456, 0.406]
-        std = [0.229, 0.224, 0.225]
+        # 1. Automatically check and prepare 200 points if missing
+        prepare_imagenette_sdp(target_dir=target_dir, num_samples=200)
+
+        # 2. Load exactly like CIFAR
+        dataset = np.load(os.path.join(target_dir, 'X_sdp.npy'))
+        labels = np.load(os.path.join(target_dir, 'y_sdp.npy'))
         
-        test_transforms = v2.Compose([
-            v2.Resize(256),
-            v2.CenterCrop(224),
-            v2.ToImage(),
-            v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize(mean=mean, std=std)
-        ])
-        
-        val_dataset = datasets.ImageFolder(data_dir, transform=test_transforms)
-        
-        # Load the whole dataset into one batch for verification 
-        # (Imagenette val set is ~3.9k images, takes ~2.3GB of RAM)
-        loader = DataLoader(val_dataset, batch_size=len(val_dataset), shuffle=False)
-        dataset, labels = next(iter(loader))
-        
-        # Scale the epsilon range based on the minimum standard deviation of the dataset
-        range_val = args.radius / min(std)
+        # 3. Preprocess and format: (N, H, W, C) -> (N, C, H, W)
+        dataset = preprocess_imagenette(dataset)
+        dataset = torch.from_numpy(dataset).permute(0, 3, 1, 2)
+        labels = torch.from_numpy(labels)
+
+        # Scale epsilon range by min std (0.224)
+        std_min = 0.224
+        range_val = args.radius / std_min
         classes = 10
-        
+
     else:
         raise ValueError(f"Unexpected dataset: {args.dataset}")
         

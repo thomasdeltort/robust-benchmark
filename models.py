@@ -1905,7 +1905,7 @@ def ResNet18_1_LIP_GNP_Imagenette():
 
 
 def ResNet18_1_LIP_Bjork_Imagenette():
-    """
+    """ 
     Wrapper for a 1-Lipschitz ResNet-18 on Imagenette.
     Uses Spectral Normalization convolutions (Bjork).
     """
@@ -1918,3 +1918,179 @@ def ResNet18_1_LIP_Bjork_Imagenette():
         orthogonal=False,          # Set to False for SpectralConv2d (Bjork)
         input_size=224             # 224x224 resolution for Imagenette/ImageNet
     )
+    
+def VGG13_1_LIP_Bjork_Imagenette():
+    """
+    Model: VGG13-like 1-LIP Bjork for Imagenette (224x224)
+    Depth: 10 Convolutional + 3 Linear layers = 13 layers
+    """
+    model = torchlip.Sequential(
+        # Block 1: 224x224 -> 112x112
+        torchlip.SpectralConv2d(3, 64, kernel_size=3, stride=1, padding=1),
+        GroupSort_General(),
+        torchlip.SpectralConv2d(64, 64, kernel_size=3, stride=2, padding=1),
+        GroupSort_General(),
+
+        # Block 2: 112x112 -> 56x56
+        torchlip.SpectralConv2d(64, 128, kernel_size=3, stride=1, padding=1),
+        GroupSort_General(),
+        torchlip.SpectralConv2d(128, 128, kernel_size=3, stride=2, padding=1),
+        GroupSort_General(),
+
+        # Block 3: 56x56 -> 28x28
+        torchlip.SpectralConv2d(128, 256, kernel_size=3, stride=1, padding=1),
+        GroupSort_General(),
+        torchlip.SpectralConv2d(256, 256, kernel_size=3, stride=2, padding=1),
+        GroupSort_General(),
+
+        # Block 4: 28x28 -> 14x14
+        torchlip.SpectralConv2d(256, 512, kernel_size=3, stride=1, padding=1),
+        GroupSort_General(),
+        torchlip.SpectralConv2d(512, 512, kernel_size=3, stride=2, padding=1),
+        GroupSort_General(),
+
+        # Block 5: 14x14 -> 7x7
+        torchlip.SpectralConv2d(512, 512, kernel_size=3, stride=1, padding=1),
+        GroupSort_General(),
+        torchlip.SpectralConv2d(512, 512, kernel_size=3, stride=2, padding=1),
+        GroupSort_General(),
+
+        # Classifier
+        nn.Flatten(),
+        torchlip.SpectralLinear(512 * 7 * 7, 512),
+        GroupSort_General(),
+        torchlip.SpectralLinear(512, 512),
+        GroupSort_General(),
+        torchlip.SpectralLinear(512, 10)
+    )
+    return model
+    
+def VGG13_1_LIP_GNP_Imagenette():
+    """
+    Model: VGG13-like 1-LIP GNP (Orthogonal) for Imagenette (224x224)
+    Depth: 10 Convolutional + 3 Linear layers = 13 layers
+    """
+    model = torchlip.Sequential(
+        # Block 1: 224x224 -> 112x112
+        AdaptiveOrthoConv2d(3, 64, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        AdaptiveOrthoConv2d(64, 64, 3, 2, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+
+        # Block 2: 112x112 -> 56x56
+        AdaptiveOrthoConv2d(64, 128, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        AdaptiveOrthoConv2d(128, 128, 3, 2, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+
+        # Block 3: 56x56 -> 28x28
+        AdaptiveOrthoConv2d(128, 256, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        AdaptiveOrthoConv2d(256, 256, 3, 2, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+
+        # Block 4: 28x28 -> 14x14
+        AdaptiveOrthoConv2d(256, 512, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        AdaptiveOrthoConv2d(512, 512, 3, 2, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+
+        # Block 5: 14x14 -> 7x7
+        AdaptiveOrthoConv2d(512, 512, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+        AdaptiveOrthoConv2d(512, 512, 3, 2, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS),
+        GroupSort_General(),
+
+        # Classifier
+        nn.Flatten(),
+        torchlip.SpectralLinear(512 * 7 * 7, 512),
+        GroupSort_General(),
+        torchlip.SpectralLinear(512, 512),
+        GroupSort_General(),
+        torchlip.SpectralLinear(512, 10)
+    )
+    return model
+    
+def VGG16_1_LIP_Bjork_Imagenette():
+    """
+    Model: VGG16-like 1-LIP Bjork for Imagenette (224x224)
+    Depth: 13 Convolutional + 3 Linear layers = 16 layers
+    """
+    model = torchlip.Sequential(
+        # Block 1: 224x224 -> 112x112
+        torchlip.SpectralConv2d(3, 64, 3, 1, 1), GroupSort_General(),
+        torchlip.SpectralConv2d(64, 64, 3, 1, 1), GroupSort_General(),
+        torchlip.SpectralConv2d(64, 64, 3, 2, 1), GroupSort_General(),
+
+        # Block 2: 112x112 -> 56x56
+        torchlip.SpectralConv2d(64, 128, 3, 1, 1), GroupSort_General(),
+        torchlip.SpectralConv2d(128, 128, 3, 1, 1), GroupSort_General(),
+        torchlip.SpectralConv2d(128, 128, 3, 2, 1), GroupSort_General(),
+
+        # Block 3: 56x56 -> 28x28
+        torchlip.SpectralConv2d(128, 256, 3, 1, 1), GroupSort_General(),
+        torchlip.SpectralConv2d(256, 256, 3, 1, 1), GroupSort_General(),
+        torchlip.SpectralConv2d(256, 256, 3, 1, 1), GroupSort_General(),
+        torchlip.SpectralConv2d(256, 256, 3, 2, 1), GroupSort_General(),
+
+        # Block 4: 28x28 -> 14x14
+        torchlip.SpectralConv2d(256, 512, 3, 1, 1), GroupSort_General(),
+        torchlip.SpectralConv2d(512, 512, 3, 1, 1), GroupSort_General(),
+        torchlip.SpectralConv2d(512, 512, 3, 1, 1), GroupSort_General(),
+        torchlip.SpectralConv2d(512, 512, 3, 2, 1), GroupSort_General(),
+
+        # Block 5: 14x14 -> 7x7
+        torchlip.SpectralConv2d(512, 512, 3, 1, 1), GroupSort_General(),
+        torchlip.SpectralConv2d(512, 512, 3, 1, 1), GroupSort_General(),
+        torchlip.SpectralConv2d(512, 512, 3, 1, 1), GroupSort_General(),
+        torchlip.SpectralConv2d(512, 512, 3, 2, 1), GroupSort_General(),
+
+        # Classifier
+        nn.Flatten(),
+        torchlip.SpectralLinear(512 * 7 * 7, 512), GroupSort_General(),
+        torchlip.SpectralLinear(512, 512), GroupSort_General(),
+        torchlip.SpectralLinear(512, 10)
+    )
+    return model
+    
+def VGG16_1_LIP_GNP_Imagenette():
+    """
+    Model: VGG16-like 1-LIP GNP (Orthogonal) for Imagenette (224x224)
+    Depth: 13 Convolutional + 3 Linear layers = 16 layers
+    """
+    model = torchlip.Sequential(
+        # Block 1: 224x224 -> 112x112
+        AdaptiveOrthoConv2d(3, 64, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS), GroupSort_General(),
+        AdaptiveOrthoConv2d(64, 64, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS), GroupSort_General(),
+        AdaptiveOrthoConv2d(64, 64, 3, 2, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS), GroupSort_General(),
+
+        # Block 2: 112x112 -> 56x56
+        AdaptiveOrthoConv2d(64, 128, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS), GroupSort_General(),
+        AdaptiveOrthoConv2d(128, 128, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS), GroupSort_General(),
+        AdaptiveOrthoConv2d(128, 128, 3, 2, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS), GroupSort_General(),
+
+        # Block 3: 56x56 -> 28x28
+        AdaptiveOrthoConv2d(128, 256, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS), GroupSort_General(),
+        AdaptiveOrthoConv2d(256, 256, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS), GroupSort_General(),
+        AdaptiveOrthoConv2d(256, 256, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS), GroupSort_General(),
+        AdaptiveOrthoConv2d(256, 256, 3, 2, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS), GroupSort_General(),
+
+        # Block 4: 28x28 -> 14x14
+        AdaptiveOrthoConv2d(256, 512, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS), GroupSort_General(),
+        AdaptiveOrthoConv2d(512, 512, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS), GroupSort_General(),
+        AdaptiveOrthoConv2d(512, 512, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS), GroupSort_General(),
+        AdaptiveOrthoConv2d(512, 512, 3, 2, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS), GroupSort_General(),
+
+        # Block 5: 14x14 -> 7x7
+        AdaptiveOrthoConv2d(512, 512, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS), GroupSort_General(),
+        AdaptiveOrthoConv2d(512, 512, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS), GroupSort_General(),
+        AdaptiveOrthoConv2d(512, 512, 3, 1, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS), GroupSort_General(),
+        AdaptiveOrthoConv2d(512, 512, 3, 2, 1, padding_mode='zeros', ortho_params=DEFAULT_ORTHO_PARAMS), GroupSort_General(),
+
+        # Classifier
+        nn.Flatten(),
+        torchlip.SpectralLinear(512 * 7 * 7, 512), GroupSort_General(),
+        torchlip.SpectralLinear(512, 512), GroupSort_General(),
+        torchlip.SpectralLinear(512, 10)
+    )
+    return model
