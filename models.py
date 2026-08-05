@@ -1682,10 +1682,17 @@ class LirpaPixelUnshuffle(nn.Module):
 class BasicBlockLipschitz(nn.Module):
     expansion = 1
 
-    def __init__(self, in_channels: int, out_channels: int, stride: int = 1, orthogonal: bool = False):
+    def __init__(self, in_channels: int, out_channels: int, stride: int = 1, orthogonal: bool = False, use_bjorck: bool = True):
         super().__init__()
 
-        conv = AdaptiveOrthoConv2d if orthogonal else torchlip.SpectralConv2d
+        # Toggle to disable Björck iterations cleanly
+        if orthogonal:
+            conv = AdaptiveOrthoConv2d
+        else:
+            if use_bjorck:
+                conv = torchlip.SpectralConv2d
+            else:
+                conv = lambda *args, **kwargs: torchlip.SpectralConv2d(*args, **kwargs, eps_bjorck=None)
 
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -1733,10 +1740,17 @@ class BasicBlockLipschitz(nn.Module):
 class BottleneckBlockLipschitz(nn.Module):
     expansion = 4
 
-    def __init__(self, in_channels: int, out_channels: int, stride: int = 1, orthogonal: bool = False):
+    def __init__(self, in_channels: int, out_channels: int, stride: int = 1, orthogonal: bool = False, use_bjorck: bool = True):
         super().__init__()
 
-        conv = AdaptiveOrthoConv2d if orthogonal else torchlip.SpectralConv2d
+        # Toggle to disable Björck iterations cleanly
+        if orthogonal:
+            conv = AdaptiveOrthoConv2d
+        else:
+            if use_bjorck:
+                conv = torchlip.SpectralConv2d
+            else:
+                conv = lambda *args, **kwargs: torchlip.SpectralConv2d(*args, **kwargs, eps_bjorck=None)
 
         self.alpha = nn.Parameter(torch.tensor(0.0), requires_grad=True)
         
@@ -1749,7 +1763,6 @@ class BottleneckBlockLipschitz(nn.Module):
         self.bc3 = LirpaBatchCentering2D(out_channels * self.expansion)
         self.act = GroupSort_General()
         
-        # FIXED: Added PixelUnshuffle logic to handle stride > 1 safely for Orthogonal Convolutions
         if stride != 1 or in_channels != out_channels * self.expansion:
             if stride != 1:
                 self.shortcut = nn.Sequential(
@@ -1767,7 +1780,7 @@ class BottleneckBlockLipschitz(nn.Module):
 
     def forward(self, x):
         residual = x
-        alpha = alpha = torch.sigmoid(self.alpha).view(1, 1, 1, 1)
+        alpha = torch.sigmoid(self.alpha).view(1, 1, 1, 1)
         
         x = self.conv1(x)
         x = self.bc1(x)
@@ -1793,18 +1806,22 @@ class ResNetLipschitz(nn.Module):
             layers: List[int], 
             num_classes: int, 
             orthogonal: bool = False,
+            use_bjorck: bool = True,
             input_size: int = 32) -> None:
         super().__init__()
 
-        conv = AdaptiveOrthoConv2d if orthogonal else torchlip.SpectralConv2d
-        
-        # We now use SpectralLinear in all cases, removing the 'linear' toggle.
+        if orthogonal:
+            conv = AdaptiveOrthoConv2d
+        else:
+            if use_bjorck:
+                conv = torchlip.SpectralConv2d
+            else:
+                conv = lambda *args, **kwargs: torchlip.SpectralConv2d(*args, **kwargs, eps_bjorck=None)
 
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.input_size = input_size
 
-        # 1. Initial Pooling (Only for large inputs)
         if input_size == 224:
             self.conv1 = conv(in_channels, out_channels, kernel_size=7, stride=2, padding=3, bias=False)
             self.pool1 = LirpaFriendlyL2Pool2d(kernel_size=2, stride=2)
@@ -1816,21 +1833,24 @@ class ResNetLipschitz(nn.Module):
         self.act = GroupSort_General()
         
         self.layers = nn.ModuleList([
-            self._make_layer(block, out_channels * (2 ** i), layers[i], stride=1 if i == 0 else 2, orthogonal=orthogonal) 
+            self._make_layer(block, out_channels * (2 ** i), layers[i], stride=1 if i == 0 else 2, orthogonal=orthogonal, use_bjorck=use_bjorck) 
             for i in range(len(layers))
         ])
         
-        # 2. Global Pooling (Before the classifier)
         self.pool = LirpaFriendlyAdaptiveL2Pool2d((1, 1))
         
-        # Always use SpectralLinear
-        self.fc = torchlip.SpectralLinear(int(out_channels * (2 ** (len(layers) - 1)) * block.expansion), num_classes)
+        # Deactivate Björck for the final Linear layer if requested
+        fc_in_features = int(out_channels * (2 ** (len(layers) - 1)) * block.expansion)
+        if use_bjorck:
+            self.fc = torchlip.SpectralLinear(fc_in_features, num_classes)
+        else:
+            self.fc = torchlip.SpectralLinear(fc_in_features, num_classes, eps_bjorck=None)
 
-    def _make_layer(self, block: nn.Module, out_channels: int, num_blocks: int, stride: int, orthogonal: bool) -> nn.Sequential:
+    def _make_layer(self, block: nn.Module, out_channels: int, num_blocks: int, stride: int, orthogonal: bool, use_bjorck: bool) -> nn.Sequential:
         strides = [stride] + [1] * (num_blocks - 1)
         layers = []
         for s in strides:
-            layers.append(block(self.out_channels, out_channels, s, orthogonal))
+            layers.append(block(self.out_channels, out_channels, s, orthogonal=orthogonal, use_bjorck=use_bjorck))
             self.out_channels = out_channels * block.expansion
         return nn.Sequential(*layers)
 
@@ -1848,6 +1868,22 @@ class ResNetLipschitz(nn.Module):
         x = torch.flatten(x, 1)
         x = self.fc(x)
         return x
+
+
+def ResNet18_1_LIP():
+    """
+    Wrapper for a 1-Lipschitz ResNet-18 on CIFAR-10 WITHOUT Bjorck iterations.
+    """
+    return ResNetLipschitz(
+        in_channels=3,             
+        out_channels=64,           
+        block=BasicBlockLipschitz, 
+        layers=[2, 2, 2, 2],       
+        num_classes=10,            
+        orthogonal=False,          
+        use_bjorck=False,          # <--- Disables Björck entirely (eps_bjorck=None)
+        input_size=32              
+    )
     
 def ResNet18_1_LIP_GNP():
     """

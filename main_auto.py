@@ -74,7 +74,12 @@ model_zoo = {
         "ResNet18_1_LIP_Bjork": ResNet18_1_LIP_Bjork if 'ResNet18_1_LIP_Bjork' in globals() else None,
         "ResNet18_1_LIP_GNP_Imagenette": ResNet18_1_LIP_GNP_Imagenette if 'ResNet18_1_LIP_GNP_Imagenette' in globals() else None,
         "ResNet18_1_LIP_Bjork_Imagenette": ResNet18_1_LIP_Bjork_Imagenette if 'ResNet18_1_LIP_Bjork_Imagenette' in globals() else None,
-    }
+        
+        "VGG13_1_LIP_Bjork_Imagenette": VGG13_1_LIP_Bjork_Imagenette if 'VGG13_1_LIP_Bjork_Imagenette' in globals() else None,
+        "VGG13_1_LIP_GNP_Imagenette": VGG13_1_LIP_GNP_Imagenette if 'VGG13_1_LIP_GNP_Imagenette' in globals() else None,
+        "VGG16_1_LIP_Bjork_Imagenette": VGG16_1_LIP_Bjork_Imagenette if 'VGG16_1_LIP_Bjork_Imagenette' in globals() else None,
+        "VGG16_1_LIP_GNP_Imagenette": VGG16_1_LIP_GNP_Imagenette if 'VGG16_1_LIP_GNP_Imagenette' in globals() else None,
+}
     
 def find_max_epsilon_binary_CRA(images, model, clean_indices, args, L, tol=0.0001):
     """
@@ -164,6 +169,7 @@ def main():
     parser.add_argument('--split_index', default=-1, type=int, help='Layer index to split the model for Hybrid verification. -1 disables hybrid.')
     parser.add_argument('--sdp', default=False, type=bool, help='If true, sdp verification used for hybrid')
     parser.add_argument('--start_step', default=1, type=int, help='starting index of the epsilon scale')
+    parser.add_argument('--otherpoints', action='store_true', help='Use a disjoint set of 200 points for evaluation')
     
     parser.add_argument('--epsilon_max', type=float, default=None, help='Manually set the maximum epsilon for paving. If None, it is computed via binary search.')
     parser.add_argument('--use_conventional_groupsort', action='store_true', 
@@ -197,7 +203,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     images, targets, classes = load_dataset_benchmark_auto(args)
     model = load_model(args, model_zoo, device)
-    
+    print("images shape", images.shape)
     # --- NEW LOGIC: Replace GroupSort if requested ---
     if args.use_conventional_groupsort:
         print("\n--- PREPARING MODEL ---")
@@ -209,13 +215,34 @@ def main():
     model.to(device)
     model.eval()
 
+#    with torch.no_grad():
+#        images, targets = images.to(device), targets.to(device)
+#        output = model(images)
+#        predictions = output.argmax(dim=1)
+#        clean_indices = (predictions == targets).nonzero(as_tuple=True)[0]
+#        clean_acc = (len(clean_indices) / len(targets)) * 100
+#        print(f"Clean Accuracy: {clean_acc:.2f}% ({len(clean_indices)} samples)")print("\n--- Computing Clean Accuracy (Batched) ---")
     with torch.no_grad():
-        images, targets = images.to(device), targets.to(device)
-        output = model(images)
-        predictions = output.argmax(dim=1)
-        clean_indices = (predictions == targets).nonzero(as_tuple=True)[0]
-        clean_acc = (len(clean_indices) / len(targets)) * 100
+        all_preds = []
+        eval_bs = 32  # Small batch size to prevent OOM
+        
+        # Process images in batches
+        for i in range(0, images.shape[0], eval_bs):
+            batch_imgs = images[i:i+eval_bs].to(device)
+            batch_out = model(batch_imgs)
+            # Instantly move predictions to CPU
+            all_preds.append(batch_out.argmax(dim=1).cpu())
+            
+        predictions = torch.cat(all_preds, dim=0)
+        targets_cpu = targets.cpu()
+        
+        # Calculate clean indices
+        clean_indices = (predictions == targets_cpu).nonzero(as_tuple=True)[0]
+        clean_acc = (len(clean_indices) / len(targets_cpu)) * 100
+        
+        # Keep clean_indices on the CPU for now; functions will move them as needed
         print(f"Clean Accuracy: {clean_acc:.2f}% ({len(clean_indices)} samples)")
+
 
     registry = RobustnessRegistry(
         model_name=args.model,
@@ -370,23 +397,6 @@ def main():
                 # This forces Python to print every step of the call stack
                 traceback.print_exc(file=sys.stdout)
                 
-                print("-" * 60)
-                print("DEBUGGING INFO - TENSOR DEVICES AT TIME OF CRASH:")
-                print(f"Device targeted: {device}")
-                print(f"batch_images device: {batch_images.device}")
-                
-                if batch_global_L is not None:
-                    print(f"batch_global_L device: {batch_global_L.device}")
-                else:
-                    print("batch_global_L is None")
-                    
-                if batch_global_U is not None:
-                    print(f"batch_global_U device: {batch_global_U.device}")
-                else:
-                    print("batch_global_U is None")
-                    
-                print("="*60)
-                
                 # Stop the script immediately so you can read the output
                 raise SystemExit("Halting execution to inspect the trace.")
         else:
@@ -412,6 +422,25 @@ def main():
                     groupsort = True if ("GNP" in args.model or "Bjork" in args.model) else False
                     orig_tau = args.high_tau
                     
+#                    # Run 1: high_tau=False
+#                    args.high_tau = False
+#                    sdp_acc_f, sdp_t_f, sdp_idx_f = 0.0, 0.0, torch.tensor([], device=device)
+#                    try:
+#                        sdp_acc_f, sdp_t_f, sdp_idx_f = compute_sdp_crown_vra(
+#                            images, targets, model, float(eps_rescaled), clean_indices, 
+#                            device, classes, args, batch_size=1, return_robust_points=True, groupsort=groupsort
+#                        )
+#                    except Exception as e: print(f"SDP (high_tau=False) OOM/Failed: {e}")
+#
+#                    # Run 2: high_tau=True
+#                    args.high_tau = True
+#                    sdp_acc_t, sdp_t_t, sdp_idx_t = 0.0, 0.0, torch.tensor([], device=device)
+#                    try:
+#                        sdp_acc_t, sdp_t_t, sdp_idx_t = compute_sdp_crown_vra(
+#                            images, targets, model, float(eps_rescaled), clean_indices, 
+#                            device, classes, args, batch_size=1, return_robust_points=True, groupsort=groupsort
+#                        )
+#                    except Exception as e: print(f"SDP (high_tau=True) OOM/Failed: {e}")
                     # Run 1: high_tau=False
                     args.high_tau = False
                     sdp_acc_f, sdp_t_f, sdp_idx_f = 0.0, 0.0, torch.tensor([], device=device)
@@ -420,7 +449,12 @@ def main():
                             images, targets, model, float(eps_rescaled), clean_indices, 
                             device, classes, args, batch_size=1, return_robust_points=True, groupsort=groupsort
                         )
-                    except Exception as e: print(f"SDP (high_tau=False) OOM/Failed: {e}")
+                    except Exception as e:
+                        print("\n" + "="*60)
+                        print("!! FATAL ERROR CAUGHT (high_tau=False) !!")
+                        print("="*60)
+                        traceback.print_exc(file=sys.stdout)
+                        raise SystemExit("Halting execution to inspect the trace.")
 
                     # Run 2: high_tau=True
                     args.high_tau = True
@@ -430,7 +464,12 @@ def main():
                             images, targets, model, float(eps_rescaled), clean_indices, 
                             device, classes, args, batch_size=1, return_robust_points=True, groupsort=groupsort
                         )
-                    except Exception as e: print(f"SDP (high_tau=True) OOM/Failed: {e}")
+                    except Exception as e:
+                        print("\n" + "="*60)
+                        print("!! FATAL ERROR CAUGHT (high_tau=True) !!")
+                        print("="*60)
+                        traceback.print_exc(file=sys.stdout)
+                        raise SystemExit("Halting execution to inspect the trace.")
 
                     # Pick the best result
                     if sdp_acc_t > sdp_acc_f:

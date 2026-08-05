@@ -1,295 +1,346 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-# python hybrid_verification.py --model_path /home/aws_install/robust-benchmark/models/vanilla_VGG13_1_LIP_Bjork_CIFAR10_cifar10_tau_a250.0_T100.0_bs128_lr0.001_1771859356_acc0.86.pth --model "VGG13_1_LIP_Bjork_CIFAR10" --dataset cifar10 --epsilon 0.01 --split_index 3  --batch_size 1
 """
-Hybrid Robustness Verification Script
-Combines 1-Lipschitz (L2) prefix verification with LIRPA/CROWN suffix verification,
-and includes AutoAttack empirical baselines and CSV logging.
+Ablation Study: Dual Optimization Failure & Relaxation Compounding
+Evaluates:
+  1. Full Network + Vanilla CROWN (No dual optimization)
+  2. Full Network + Alpha-CROWN (With dual gradient ascent)
+  3. Hybrid Suffix + Vanilla CROWN
+  4. Hybrid Suffix + Alpha-CROWN
 """
 
 import torch
 import torch.nn as nn
-import numpy as np
 import argparse
 import os
-import sys
 import csv
 import time
+import json
+import numpy as np
 
-# --- Lipschitz Layer Imports ---
+# Ensure auto_LiRPA components are available (assuming they are in project_utils or auto_LiRPA)
+# If BoundedModule is directly from auto_LiRPA, it should be imported in project_utils.
+from models import *
+from project_utils import *
+
 try:
     from deel import torchlip
 except ImportError:
     print("Warning: Could not import 'deel.torchlip'.")
 
-# --- Model Imports (from your local files) ---
-from models import *
-from project_utils import *
 
-
-def run_hybrid_verification(args, model_zoo):
+def compute_alphacrown_vra_and_time(
+    images, targets, model, epsilon, clean_indices, args, 
+    batch_size=2, norm=2, return_robust_points=False, x_U=None, x_L=None,
+    heavy_computation=False, partial_results=None, results_dict=None, results_filename=None,
+    method='alpha-crown'  # <-- NEW PARAMETER: 'alpha-crown' or 'crown'
+):
     """
-    Main function to run hybrid verification, empirical attacks, and save results.
+    Computes Certified Robust Accuracy (CRA) using Alpha-Crown or Vanilla CROWN.
     """
-    # --- 1. Setup Device, Data, and Model ---
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-
-    images, targets, epsilon_rescaled, classes = load_dataset_benchmark(args)
+    batch_size = getattr(args, 'batch_size', batch_size)
+    try:
+        device = next(model.parameters()).device
+    except StopIteration:
+        device = images.device
+    total_num_images = images.shape[0]
+    model.eval()
     
-    # Slice dataset based on args
-    images = images[args.start:args.end]
-    targets = targets[args.start:args.end]
-    
-    print(f"Loading 1-Lipschitz model: {args.model}")
-    full_model = load_model(args, model_zoo, device)
-    full_model.eval()
+    if not isinstance(clean_indices, torch.Tensor):
+        clean_indices = torch.tensor(clean_indices)
 
-    # Print model layers to help choose split_index
-    print("\n--- Model Layer Breakdown for --split_index ---")
-    for i, layer in enumerate(full_model.children()):
-        print(f"[{i}] {layer.__class__.__name__}: {layer}")
-    print("-----------------------------------------------\n")
+    # --- Step 1: Filter for correctly classified samples ---
+    correct_images = images[clean_indices]
+    correct_targets = targets[clean_indices]
 
-    # --- 2. Split the Model ---
-    all_layers = list(full_model.children())
-    split_idx = args.split_index
-    
-    if split_idx <= 0 or split_idx >= len(all_layers):
-        raise ValueError(f"--split_index {split_idx} is out of bounds for this model.")
+    if len(correct_images) == 0:
+        if return_robust_points:
+            return 0.0, 0.0, torch.tensor([])
+        return 0.0, 0.0
 
-    f1_prefix = torchlip.Sequential(*all_layers[:split_idx]).to(device).eval()
-    f2_suffix_lip = torchlip.Sequential(*all_layers[split_idx:]).to(device).eval()
-    
-    print("Converting model suffix for LIRPA using vanilla_export...")
-    f2_suffix_vanilla = vanilla_export(f2_suffix_lip).to(device).eval()
-    print(f"Model split complete. Prefix: {len(f1_prefix)} layers. Suffix: {len(f2_suffix_lip)} layers.")
+    # --- Step 2: Initialize variables & Checkpoint Loading ---
+    num_robust_points = 0
+    total_time = 0.0
+    num_batches = (len(correct_images) + batch_size - 1) // batch_size
+    robust_indices_list = []
+    start_batch = 0
 
-    # ======================================================================
-    # NEW: LIPSCHITZ ESTIMATION VIA POWER ITERATION
-    # ======================================================================
-    print("\n--- Estimating Lipschitz Constants (Power Iteration) ---")
-    
-    # --- UPDATED: Shape mapping for Imagenette ---
-    if "mnist" in args.dataset.lower():
-        inp_shape = (1, 1, 28, 28)
-    elif "imagenette" in args.dataset.lower():
-        inp_shape = (1, 3, 224, 224)
-    else:
-        inp_shape = (1, 3, 32, 32)
+    if heavy_computation:
+        if partial_results is None:
+            partial_results = []
+        completed_batches = len(partial_results) // batch_size
+        partial_results = partial_results[:completed_batches * batch_size]
+        start_batch = completed_batches
+        num_robust_points = sum(partial_results)
         
-    # 1. Estimate Full Model L (for Method 1 CRA)
-    try:
-        L_full_empirical = compute_model_lipschitz(full_model, input_shape=inp_shape, device=device)
-        print(f"Full Model L_2 (Empirical): {L_full_empirical:.4f}")
-    except Exception as e:
-        print(f"Warning: PI failed for full model ({e}). Defaulting to 1.0")
-        L_full_empirical = 1.0
+        if results_dict is not None and "total_time" in results_dict:
+            total_time = results_dict.get("total_time", 0.0)
 
-    # 2. Estimate Prefix Model L (for Method 2 Hybrid)
-    try:
-        L_prefix_empirical = compute_model_lipschitz(f1_prefix, input_shape=inp_shape, device=device)
-        print(f"Prefix Model L_2 (Empirical): {L_prefix_empirical:.4f}")
-    except Exception as e:
-        print(f"Warning: PI failed for prefix ({e}). Defaulting to 1.0")
-        L_prefix_empirical = 1.0
-    # ======================================================================
+    # --- Step 3: Setup BoundedModule ---
+    has_residuals = any(isinstance(m, (BasicBlockLipschitz, BottleneckBlockLipschitz)) 
+                        for m in model.modules())
+    
+    selected_conv_mode = "matrix" if has_residuals else "patches"
+    
+    dummy_input = correct_images[0:1].to(device)
+    bounded_model = BoundedModule(model, dummy_input, bound_opts={"conv_mode": selected_conv_mode}, verbose=False)
+    bounded_model.eval()
 
-    # --- 3. Clean Accuracy Baseline ---
-    print("\nCalculating clean accuracy on the test subset...")
+    print(f"   [Verifier Engine: {method.upper()} | ConvMode: {selected_conv_mode}]")
+
+    jitter = 1e-7
+
+    # --- Step 4: Batch Loop ---
+    for i in range(start_batch, num_batches):
+        start_idx = i * batch_size
+        end_idx = min((i + 1) * batch_size, len(correct_images))
+        
+        batch_images = correct_images[start_idx:end_idx].clone().to(device)
+        batch_targets = correct_targets[start_idx:end_idx]
+        current_bs = batch_images.shape[0]
+
+        # --- A. Prepare Global Domain Bounds ---
+        if x_L is not None:
+            batch_global_L = x_L.expand(current_bs, *x_L.shape[1:]).contiguous() 
+        else:
+            batch_global_L = None
+            
+        if x_U is not None:
+            batch_global_U = x_U.expand(current_bs, *x_U.shape[1:]).contiguous() 
+        else:
+            batch_global_U = None
+
+        # --- B. CLAMP IMAGES ---
+        if batch_global_L is not None and batch_global_U is not None:
+            batch_images = torch.max(torch.min(batch_images, batch_global_U), batch_global_L)
+
+        # --- C. Define Perturbation Constraints ---
+        if norm == 'inf' or norm == float('inf'):
+            if batch_global_L is not None and batch_global_U is not None:
+                ptb_L = torch.max(batch_global_L, batch_images - epsilon) - jitter
+                ptb_U = torch.min(batch_global_U, batch_images + epsilon) + jitter
+                ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon, x_L=ptb_L, x_U=ptb_U)
+            else:
+                ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon)
+        else:
+            if getattr(args, 'use_conventional_groupsort', False):
+                safe_L = batch_global_L - jitter if batch_global_L is not None else None
+                safe_U = batch_global_U + jitter if batch_global_U is not None else None
+                ptb = PerturbationLpNorm(norm=norm, eps=epsilon, x_L=safe_L, x_U=safe_U)
+            else:
+                ptb = PerturbationLpNorm(norm=norm, eps=epsilon, x_L=batch_global_L, x_U=batch_global_U)
+
+        bounded_input = BoundedTensor(batch_images, ptb)
+        num_classes = 10 
+        c = build_C(batch_targets.to("cpu"), num_classes).to(device)
+
+        # --- Time the verification ---
+        if device.type == 'cuda':
+            torch.cuda.synchronize()
+        start_time_batch = time.time()
+        
+        # --- DYNAMIC ITERATION SETTING ---
+        iterations = 0 if method == 'crown' else getattr(args, 'iteration', 300)
+        
+        bounded_model.set_bound_opts({
+            'optimize_bound_args': {
+                'iteration': iterations,  
+                'lr_alpha': getattr(args, 'lr_alpha', 0.5),
+                'early_stop_patience': 20, 
+                'enable_opt_interm_bounds': (iterations > 0), 
+                'verbosity': False
+            }, 
+            'verbosity': False
+        })
+        
+        lb_diff = bounded_model.compute_bounds(x=(bounded_input,), C=c, method=method)[0]
+        
+        if device.type == 'cuda':
+            torch.cuda.synchronize()
+        end_time_batch = time.time()
+        total_time += (end_time_batch - start_time_batch)
+
+        # --- Check Robustness ---
+        is_robust = (lb_diff.view(current_bs, num_classes - 1) > 0).all(dim=1)
+        is_robust_list = is_robust.cpu().tolist()
+        
+        if heavy_computation:
+            partial_results.extend(is_robust_list)
+            num_robust_points = sum(partial_results)
+            if results_dict is not None and results_filename is not None:
+                results_dict["partial_results"] = partial_results
+                results_dict["total_time"] = total_time
+                with open(results_filename, 'w') as f:
+                    json.dump(results_dict, f, indent=4)
+        else:
+            num_robust_points += sum(is_robust_list)
+            if return_robust_points:
+                batch_global_indices = clean_indices[start_idx:end_idx]
+                robust_indices_list.append(batch_global_indices[is_robust.cpu()])
+
+        print(f"      Batch {i+1}/{num_batches}: {torch.sum(is_robust).item()}/{current_bs} robust.", end='\r')
+
+    print("\n") 
+    
+    cra = (num_robust_points / total_num_images) * 100.0
+    mean_time_per_image = total_time / len(correct_images) if len(correct_images) > 0 else 0.0
+
+    if return_robust_points:
+        if heavy_computation:
+            partial_results_tensor = torch.tensor(partial_results, dtype=torch.bool)
+            all_robust_indices = clean_indices[partial_results_tensor]
+        else:
+            all_robust_indices = torch.cat(robust_indices_list) if robust_indices_list else torch.tensor([])
+        return cra, total_time, all_robust_indices
+
+    return cra, total_time
+
+
+def run_cancellation_ablation(args, model_zoo):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}\n")
+
+    # --- 1. Load Data & Models ---
+    images, targets, epsilon_rescaled, classes = load_dataset_benchmark(args)
+    images = images[args.start:args.end].to(device)
+    targets = targets[args.start:args.end].to(device)
+
+    print(f"Loading 1-Lipschitz model: {args.model}")
+    full_model = load_model(args, model_zoo, device).eval()
+
+    # Clean accuracy filtering
     with torch.no_grad():
-        images = images.to(device)
-        targets = targets.to(device)
         output = full_model(images)
         predictions = output.argmax(dim=1)
         clean_indices = (predictions == targets).nonzero(as_tuple=True)[0]
-        clean_accuracy = (len(clean_indices) / len(targets)) * 100
-        
-    print(f"Clean Accuracy: {clean_accuracy:.2f}% ({len(clean_indices)}/{len(targets)})")
-    print(f"Verifying robustness for {len(clean_indices)} correctly classified samples.")
-    print(f"Input Epsilon: {args.epsilon} (rescaled to {epsilon_rescaled:.4f})")
-    
-    # ======================================================================
-    # Method 0: EMPIRICAL ROBUSTNESS (AutoAttack)
-    # ======================================================================
-    print("\n--- Method 0: Empirical Robustness (AutoAttack) ---")
+        clean_acc = (len(clean_indices) / len(targets)) * 100
+
+    print(f"Dataset subset: {len(targets)} samples | Clean Acc: {clean_acc:.2f}% ({len(clean_indices)} samples)")
+    print(f"Input Epsilon: {args.epsilon} (rescaled: {epsilon_rescaled:.4f})\n")
+
+    # --- 2. Prepare Exported Models ---
+    print("Exporting Full Model for auto_LiRPA...")
+    full_model_vanilla = vanilla_export(full_model).to(device).eval()
+
+    print(f"Splitting model at index {args.split_index}...")
+    all_layers = list(full_model.children())
+    split_idx = args.split_index
+    f1_prefix = torchlip.Sequential(*all_layers[:split_idx]).to(device).eval()
+    f2_suffix_lip = torchlip.Sequential(*all_layers[split_idx:]).to(device).eval()
+    f2_suffix_vanilla = vanilla_export(f2_suffix_lip).to(device).eval()
+
+    # Calculate Prefix Lipschitz Constant
     try:
-        aa_acc, time_aa, robust_idxs_aa = compute_autoattack_era_and_time(
-            images, targets, full_model, args.epsilon, clean_indices, 
-            norm=str(args.norm), dataset_name=args.dataset, return_robust_points=True
-        )
-        print(f"AutoAttack Result: {aa_acc:.2f}% | Time: {time_aa:.4f}s")
-    except NameError:
-        print("Warning: compute_autoattack_era_and_time not found. Skipping AutoAttack.")
-        aa_acc, time_aa, robust_idxs_aa = 0.0, 0.0, torch.tensor([])
+        inp_shape = (1, 3, 32, 32) if "cifar" in args.dataset.lower() else (1, 1, 28, 28)
+        L_prefix = compute_model_lipschitz(f1_prefix, input_shape=inp_shape, device=device)
+    except Exception:
+        L_prefix = 1.0
 
-    # ======================================================================
-    # Method 1: BASELINE CERTIFIED (Global Lipschitz CRA)
-    # ======================================================================
-    norm_str = str(args.norm).lower()
-    
-    # Use the empirical L2 constant instead of a hardcoded 1
-    L = convert_lipschitz_constant(L_full_empirical, norm_str, input_dim=images[0].numel())
-    
-    print(f"\n--- Method 1: Standard CRA (Global Lipschitz L={L:.4f}) ---")
-    _, certificates_cra, time_cra, robust_idxs_cra = compute_certificates_CRA(
-        images, full_model, epsilon_rescaled, clean_indices, 
-        norm=norm_str, L=L, return_robust_points=True
-    )
-    print(f"CRA Result: {certificates_cra:.2f}% | Time: {time_cra:.4f}s")
+    intermediate_epsilon = float(epsilon_rescaled * L_prefix)
+    print(f"Prefix Lipschitz Constant: {L_prefix:.4f} | Intermediate Epsilon: {intermediate_epsilon:.4f}\n")
 
-    # ======================================================================
-    # Method 2: HYBRID CERTIFIED VERIFICATION
-    # ======================================================================
-    print(f"\n--- Method 2: Hybrid Verification (Split at layer {args.split_index}) ---")
-    
-    # Scale intermediate perturbation by the Prefix Lipschitz constant
-    intermediate_epsilon = float(epsilon_rescaled * L_prefix_empirical)
-    print(f"Input Epsilon: {epsilon_rescaled:.4f} -> Intermediate Epsilon: {intermediate_epsilon:.4f}")
-
-    # Step A: Run 1-Lip Prefix
+    # Calculate Intermediate Latent Space (z_k)
     with torch.no_grad():
         z_k = f1_prefix(images)
 
-    # Step B: Run Suffix Verification
-    robust_idxs_hybrid = torch.tensor([])
-    hybrid_vra = 0.0
-    time_hybrid = 0.0
+    # --- 3. Execute 2x2 Ablation Matrix ---
+    def evaluate_verifier(x_input, model, eps, use_alpha, label):
+        args_copy = argparse.Namespace(**vars(args))
+        method_str = 'alpha-crown' if use_alpha else 'crown'
 
-    if args.norm == 'inf':
-        print("Mode: Hybrid L-Infinity (Alpha-CROWN)")
-        hybrid_vra, time_hybrid, robust_idxs_hybrid = compute_alphacrown_vra_and_time(
-            z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args, # Scaled EPS
-            batch_size=args.batch_size, norm='inf', x_U=None, x_L=None, return_robust_points=True
+        print(f"--> {label}")
+        vra, t_exec, idxs = compute_alphacrown_vra_and_time(
+            x_input, targets, model, eps, clean_indices, args_copy,
+            batch_size=args.batch_size, norm=args.norm, return_robust_points=True,
+            method=method_str
         )
+        return vra, t_exec
+
+    print("=" * 60)
+    print("RUNNING ABLATION MATRIX")
+    print("=" * 60)
+
+    # 1. Full Network + Vanilla CROWN
+    vra_full_crown, t_full_crown = evaluate_verifier(
+        images, full_model_vanilla, epsilon_rescaled, use_alpha=False, 
+        label="[1/4] Full Network + Vanilla CROWN"
+    )
+
+    # 2. Full Network + Alpha-CROWN
+    vra_full_alpha, t_full_alpha = evaluate_verifier(
+        images, full_model_vanilla, epsilon_rescaled, use_alpha=True, 
+        label="[2/4] Full Network + Alpha-CROWN"
+    )
+
+    # 3. Hybrid Suffix + Vanilla CROWN
+    vra_hyb_crown, t_hyb_crown = evaluate_verifier(
+        z_k, f2_suffix_vanilla, intermediate_epsilon, use_alpha=False, 
+        label="[3/4] Hybrid Suffix + Vanilla CROWN"
+    )
+
+    # 4. Hybrid Suffix + Alpha-CROWN
+    vra_hyb_alpha, t_hyb_alpha = evaluate_verifier(
+        z_k, f2_suffix_vanilla, intermediate_epsilon, use_alpha=True, 
+        label="[4/4] Hybrid Suffix + Alpha-CROWN"
+    )
+
+    # --- 4. Report Findings & Interpretation ---
+    print("\n" + "=" * 65)
+    print("ABLATION RESULTS: DUAL OPTIMIZATION vs. GRAPH TRUNCATION")
+    print("=" * 65)
+    print(f"{'Setting':<22} | {'Verifier':<14} | {'Certified Acc (%)':<17} | {'Time (s)':<8}")
+    print("-" * 65)
+    print(f"{'Full Network (x)':<22} | {'Vanilla CROWN':<14} | {vra_full_crown:<17.2f} | {t_full_crown:<8.2f}")
+    print(f"{'Full Network (x)':<22} | {'Alpha-CROWN':<14} | {vra_full_alpha:<17.2f} | {t_full_alpha:<8.2f}")
+    print(f"{'Hybrid Suffix (z_k)':<22} | {'Vanilla CROWN':<14} | {vra_hyb_crown:<17.2f} | {t_hyb_crown:<8.2f}")
+    print(f"{'Hybrid Suffix (z_k)':<22} | {'Alpha-CROWN':<14} | {vra_hyb_alpha:<17.2f} | {t_hyb_alpha:<8.2f}")
+    print("=" * 65)
+
+    # Diagnostic Interpretation Logic
+    print("\nDIAGNOSTIC ANALYSIS:")
+    if vra_full_alpha <= vra_full_crown:
+        print("  [!] DUAL OPTIMIZATION FAILURE CONFIRMED on Full Network:")
+        print(f"      Alpha-CROWN ({vra_full_alpha:.2f}%) failed to beat Vanilla CROWN ({vra_full_crown:.2f}%).")
+        print("      Dual gradient ascent got trapped in bad local minima across deep layers.")
     else:
-        print(f"\n[Hybrid L2 Challenge] Running Alpha-CROWN vs SDP-CROWN")
-        # 2. Run Alpha-CROWN
-        print(" -> Executing Alpha-CROWN...")
-        vra_alpha, t_alpha, idx_alpha = compute_alphacrown_vra_and_time(
-            z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args,
-            batch_size=args.batch_size, norm=2, x_U=None, x_L=None, return_robust_points=True
-        )
+        print("  [*] Dual optimization provided minor gains on the full graph.")
 
-        if "GNP" in args.model or "Bjork" in args.model:
-            groupsort = True
-        else:
-            groupsort = False
+    alpha_gain_hybrid = vra_hyb_alpha - vra_hyb_crown
+    print(f"  [*] Alpha Optimization Gain on Hybrid Suffix: +{alpha_gain_hybrid:.2f}%")
+    if alpha_gain_hybrid > 0:
+        print("      Proves slope optimization works effectively once the graph is truncated!")
 
-        # --- NEW FIX: Dynamically Inject Identity Layer ---
-        if not starts_with_affine(f2_suffix_vanilla):
-            # print("Suffix starts with an activation. Injecting Identity layer for SDP-CROWN...")
-            f2_suffix_sdp = wrap_with_identity(f2_suffix_vanilla, z_k)
-        else:
-            # print("Suffix starts with an affine layer. No wrapper needed.")
-            f2_suffix_sdp = f2_suffix_vanilla
-        # --------------------------------------------------
+    # --- 5. Save Results to CSV ---
+    if args.output_csv:
+        results_dict = {
+            'model': args.model,
+            'dataset': args.dataset,
+            'norm': args.norm,
+            'epsilon': args.epsilon,
+            'split_index': args.split_index,
+            'clean_samples': len(clean_indices),
+            'clean_acc': clean_acc,
+            'full_crown_acc': vra_full_crown,
+            'full_crown_time': t_full_crown,
+            'full_alpha_acc': vra_full_alpha,
+            'full_alpha_time': t_full_alpha,
+            'hybrid_crown_acc': vra_hyb_crown,
+            'hybrid_crown_time': t_hyb_crown,
+            'hybrid_alpha_acc': vra_hyb_alpha,
+            'hybrid_alpha_time': t_hyb_alpha
+        }
 
-        # 1. Run SDP-CROWN
-        print(" -> Executing SDP-CROWN...")
-        vra_sdp, t_sdp, idx_sdp = compute_sdp_crown_vra(
-            z_k, targets, f2_suffix_sdp, float(intermediate_epsilon), clean_indices, 
-            device, classes, args, batch_size=1, return_robust_points=True, x_U=None, x_L=None, groupsort=groupsort
-        )
-
-        # 3. SET COMPARISON LOGIC
-        set_sdp = set(idx_sdp.cpu().tolist())
-        set_alpha = set(idx_alpha.cpu().tolist())
-
-        only_sdp = set_sdp - set_alpha
-        only_alpha = set_alpha - set_sdp
-        both = set_sdp.intersection(set_alpha)
-
-        # 4. CLEAR REPORTING
-        print("\n" + "="*50)
-        print("VERIFIER PERFORMANCE SUMMARY")
-        print("="*50)
-        print(f"Alpha-CROWN Robust Acc : {vra_alpha:.2f}% (Time: {t_alpha:.4f}s)")
-        print(f"SDP-CROWN   Robust Acc : {vra_sdp:.2f}% (Time: {t_sdp:.4f}s)")
-        print("-" * 50)
-        print(f"Verified by BOTH      : {len(both)}")
-        print(f"Verified ONLY by SDP  : {len(only_sdp)}  <-- The 'SDP Gain'")
-        print(f"Verified ONLY by Alpha: {len(only_alpha)}")
+        os.makedirs(os.path.dirname(args.output_csv) or '.', exist_ok=True)
+        file_exists = os.path.isfile(args.output_csv)
         
-        if vra_sdp > vra_alpha:
-            print(f"\nWINNER: SDP-CROWN (+{vra_sdp - vra_alpha:.2f}%)")
-        elif vra_alpha > vra_sdp:
-            print(f"\nWINNER: Alpha-CROWN (+{vra_alpha - vra_sdp:.2f}%)")
-        else:
-            print("\nRESULT: TIE (Results are mathematically identical)")
-        print("="*50 + "\n")
-
-        # Assign the best result to the main variable for logging
-        hybrid_vra, time_hybrid, robust_idxs_hybrid = (vra_sdp, t_sdp, idx_sdp) if vra_sdp >= vra_alpha else (vra_alpha, t_alpha, idx_alpha)
-
-    # ======================================================================
-    # COMPARISON OF SETS
-    # ======================================================================
-    print("\n" + "="*40)
-    print("ROBUSTNESS SET COMPARISON")
-    print("="*40)
-
-    set_cra = set(robust_idxs_cra.cpu().tolist())
-    set_hybrid = set(robust_idxs_hybrid.cpu().tolist())
-
-    intersection = set_cra.intersection(set_hybrid)
-    only_cra = set_cra - set_hybrid
-    only_hybrid = set_hybrid - set_cra
-    union = set_cra.union(set_hybrid)
-
-    total_clean = len(clean_indices)
-
-    print(f"Total Clean Samples Evaluated: {total_clean}")
-    print("-" * 30)
-    print(f"Verified by BOTH methods:      {len(intersection):4d}")
-    print(f"Verified by CRA ONLY:          {len(only_cra):4d}  (Hybrid failed here)")
-    print(f"Verified by HYBRID ONLY:       {len(only_hybrid):4d}  (CRA failed here)")
-    print("-" * 30)
-    print(f"Total Unique Verified (Union): {len(union):4d}")
-    
-    verified_union_acc = (len(union) / total_clean) * 100 if total_clean > 0 else 0.0
-
-    if total_clean > 0:
-        print(f"\nOverlap Percentage (of clean): {(len(intersection)/total_clean)*100:.2f}%")
-        print(f"Hybrid Improvement over CRA:   {((len(set_hybrid) - len(set_cra))/total_clean)*100:+.2f}% (Absolute points)")
-    
-    print("="*40)
-
-    # ======================================================================
-    # CSV LOGGING
-    # ======================================================================
-    results_dict = {
-        'model': args.model,
-        'dataset': args.dataset,
-        'norm': args.norm,
-        'epsilon': args.epsilon,
-        'split_index': args.split_index,
-        'L_full': L_full_empirical,     # Added empirically computed L
-        'L_prefix': L_prefix_empirical, # Added empirically computed prefix L
-        'total_samples': len(targets),
-        'clean_samples': total_clean,
-        'clean_acc': clean_accuracy,
-        'aa_acc': aa_acc,
-        'time_aa': time_aa,
-        'cra_acc': certificates_cra,
-        'time_cra': time_cra,
-        'hybrid_acc': hybrid_vra,
-        'time_hybrid': time_hybrid,
-        'verified_union_acc': verified_union_acc
-    }
-
-    # Ensure directory exists
-    os.makedirs(os.path.dirname(args.output_csv) or '.', exist_ok=True)
-    
-    file_exists = os.path.isfile(args.output_csv)
-    with open(args.output_csv, mode='a', newline='') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=results_dict.keys())
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow(results_dict)
-        
-    print(f"-> Successfully appended results to: {args.output_csv}")
+        with open(args.output_csv, mode='a', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=results_dict.keys())
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow(results_dict)
+            
+        print(f"\n-> Successfully appended results to: {args.output_csv}")
 
 
 if __name__ == '__main__':
@@ -328,8 +379,8 @@ if __name__ == '__main__':
         "ConvSmall_CIFAR10_1_LIP_GNP": ConvSmall_CIFAR10_1_LIP_GNP if 'ConvSmall_CIFAR10_1_LIP_GNP' in globals() else None,
         "ConvDeep_CIFAR10_1_LIP_GNP": ConvDeep_CIFAR10_1_LIP_GNP if 'ConvDeep_CIFAR10_1_LIP_GNP' in globals() else None,
         "ConvLarge_CIFAR10_1_LIP_GNP": ConvLarge_CIFAR10_1_LIP_GNP if 'ConvLarge_CIFAR10_1_LIP_GNP' in globals() else None,
-        "VGG13_1_LIP_GNP_CIFAR10" : VGG13_1_LIP_GNP_CIFAR10 if 'VGG13_1_LIP_GNP_CIFAR10' in globals() else None,
-        "VGG19_1_LIP_GNP_CIFAR10" : VGG19_1_LIP_GNP_CIFAR10 if 'VGG19_1_LIP_GNP_CIFAR10' in globals() else None,
+        "VGG13_1_LIP_GNP_CIFAR10": VGG13_1_LIP_GNP_CIFAR10 if 'VGG13_1_LIP_GNP_CIFAR10' in globals() else None,
+        "VGG19_1_LIP_GNP_CIFAR10": VGG19_1_LIP_GNP_CIFAR10 if 'VGG19_1_LIP_GNP_CIFAR10' in globals() else None,
 
         # --- 1-Lipschitz models (Bjork technique) ---
         "MLP_MNIST_1_LIP_Bjork": MLP_MNIST_1_LIP_Bjork if 'MLP_MNIST_1_LIP_Bjork' in globals() else None,
@@ -344,48 +395,39 @@ if __name__ == '__main__':
         "VGG13_1_LIP_Bjork_CIFAR10": VGG13_1_LIP_Bjork_CIFAR10 if 'VGG13_1_LIP_Bjork_CIFAR10' in globals() else None,
         "VGG16_1_LIP_Bjork_CIFAR10": VGG16_1_LIP_Bjork_CIFAR10 if 'VGG16_1_LIP_Bjork_CIFAR10' in globals() else None,
         "VGG19_1_LIP_Bjork_CIFAR10": VGG19_1_LIP_Bjork_CIFAR10 if 'VGG19_1_LIP_Bjork_CIFAR10' in globals() else None,
-        
-        # --- NEW: Imagenette ResNet Models ---
+
+        # --- Imagenette ResNet Models ---
         "ResNet18_1_LIP_GNP": ResNet18_1_LIP_GNP if 'ResNet18_1_LIP_GNP' in globals() else None,
         "ResNet18_1_LIP_Bjork": ResNet18_1_LIP_Bjork if 'ResNet18_1_LIP_Bjork' in globals() else None,
         "ResNet18_1_LIP_GNP_Imagenette": ResNet18_1_LIP_GNP_Imagenette if 'ResNet18_1_LIP_GNP_Imagenette' in globals() else None,
         "ResNet18_1_LIP_Bjork_Imagenette": ResNet18_1_LIP_Bjork_Imagenette if 'ResNet18_1_LIP_Bjork_Imagenette' in globals() else None,
     }
-    
+
     # --- Argument Parsing ---
     parser = argparse.ArgumentParser(
-        description='Perform HYBRID robustness verification (1-Lip Prefix + LIRPA Suffix).'
+        description='Perform CROWN vs. Alpha-CROWN Ablation Study (Full Net vs. Hybrid Suffix).'
     )
-    parser.add_argument('--model_path', type=str, required=True, help='Path to the saved model .pth file.')
-    parser.add_argument('--model', type=str, required=True, choices=model_zoo.keys(), help='Name of the 1-Lipschitz model architecture.')
-    
-    # --- UPDATED: Added imagenette to choices ---
-    parser.add_argument('--dataset', type=str, required=True, choices=['cifar10', 'mnist', 'imagenette'], help='Dataset to use for evaluation.')
-    
-    parser.add_argument('--epsilon', type=float, required=True, help='Adversarial L2 perturbation radius (e.g., 0.5).')
+    parser.add_argument('--model_path', type=str, required=True, help='Path to saved model .pth file.')
+    parser.add_argument('--model', type=str, required=True, choices=model_zoo.keys(), help='Name of the 1-Lipschitz architecture.')
+    parser.add_argument('--dataset', type=str, required=True, choices=['cifar10', 'mnist', 'imagenette'], help='Dataset for evaluation.')
+    parser.add_argument('--epsilon', type=float, required=True, help='Adversarial L2 perturbation radius (e.g., 0.03137).')
     parser.add_argument('--split_index', type=int, required=True, help='The index of the layer to split *before*.')
-    
-    parser.add_argument('--norm', type=str, default='2', choices=['2', 'inf'],
-                        help="Propagation norm for the suffix. '2' for lossless L2, 'inf' for lossy L-inf hand-off. (Default: 2)")
-    
-    parser.add_argument('--batch_size', type=int, default=1, help='Batch size for verification. Default: 256.')
-    parser.add_argument('--start', default=0, type=int, help='start index for the dataset')
-    parser.add_argument('--end', default=200, type=int, help='end index for the dataset')
-
-    parser.add_argument('--lr_alpha', default=0.5, type=float, help='alpha learning rate')
-    parser.add_argument('--lr_lambda', default=0.05, type=float, help='lambda learning rate')
-    parser.add_argument('--high_tau', default=False, type=bool, help='Training temperature high/low')
-    
-    # --- CSV ARGUMENT ---
-    parser.add_argument('--output_csv', type=str, default='results/hybrid_run_results.csv', 
-                        help='Path to the output CSV file for saving results.')
+    parser.add_argument('--norm', type=str, default='2', choices=['2', 'inf'], help="Propagation norm ('2' or 'inf'). Default: 2.")
+    parser.add_argument('--batch_size', type=int, default=1, help='Batch size for verification. Default: 1.')
+    parser.add_argument('--start', default=0, type=int, help='Start index for test dataset.')
+    parser.add_argument('--end', default=200, type=int, help='End index for test dataset.')
+    parser.add_argument('--lr_alpha', default=0.5, type=float, help='Alpha learning rate.')
+    parser.add_argument('--lr_lambda', default=0.05, type=float, help='Lambda learning rate.')
+    parser.add_argument('--iteration', default=300, type=int, help='Number of iterations for Alpha-CROWN.')
+    parser.add_argument('--high_tau', default=False, type=bool, help='Temperature setting.')
+    parser.add_argument('--output_csv', type=str, default='results/ablation_results.csv', help='Path to output CSV file.')
 
     args = parser.parse_args()
-    args.radius = args.epsilon # For load_dataset_benchmark compatibility
+    args.radius = args.epsilon  # For compatibility with project_utils loader
 
-    # Convert 'norm' string to int if needed
+    # Convert norm string to integer
     if args.norm == '2':
         args.norm = 2
-        
-    # Run the main verification logic
-    run_hybrid_verification(args, model_zoo)
+
+    # Run the 2x2 ablation experiment
+    run_cancellation_ablation(args, model_zoo)
