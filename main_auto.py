@@ -168,6 +168,9 @@ def main():
     parser.add_argument('--high_tau', action='store_true', help='Training temperature high/low')
     parser.add_argument('--split_index', default=-1, type=int, help='Layer index to split the model for Hybrid verification. -1 disables hybrid.')
     parser.add_argument('--sdp', default=False, type=bool, help='If true, sdp verification used for hybrid')
+    parser.add_argument('--hybrid_backend', type=str, default='alphacrown', 
+                        choices=['sdp', 'crown', 'alphacrown', 'ibpcrown'], 
+                        help='Solver backend for the hybrid suffix verification.')
     parser.add_argument('--start_step', default=1, type=int, help='starting index of the epsilon scale')
     parser.add_argument('--otherpoints', action='store_true', help='Use a disjoint set of 200 points for evaluation')
     
@@ -508,7 +511,7 @@ def main():
         if solvers["hybrid"] and args.split_index > 0:
             try:
                 h_acc, t_h, idx_hybrid = compute_hybrid_vra(
-                    images, targets, model, eps_rescaled, clean_indices, device, classes, args, L_prefix=L_prefix_PI, sdp=args.sdp
+                    images, targets, model, eps_rescaled, clean_indices, device, classes, args, L_prefix=L_prefix_PI
                 )
                 result_dict['hybrid'], result_dict['time_hybrid'] = h_acc, t_h
                 registry.register(eps, "hybrid", idx_hybrid)

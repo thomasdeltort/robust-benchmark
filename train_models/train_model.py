@@ -302,7 +302,7 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', type=str, default='cifar10')
     parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--lr', type=float, default=3e-4)
-    parser.add_argument('--wd', type=float, default=1e-2)
+    parser.add_argument('--wd', type=float, default=0.0)
     parser.add_argument('--criterion', type=str, default='tau')
     parser.add_argument('--alpha', type=float, default=250.0)
     parser.add_argument('--epsilon', type=float, default=0.01)
