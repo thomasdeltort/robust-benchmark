@@ -381,7 +381,7 @@ def main():
         if solvers["alphacrown"]:
             try:
                 vra, t_v, idx_alpha = compute_alphacrown_vra_and_time(
-                    images, targets, model, eps_rescaled, clean_indices, args, 
+                    images, targets, model, float(eps_rescaled), clean_indices, args, 
                     batch_size=args.batch_size, norm=args.norm, return_robust_points=True
                 )
                 result_dict['lirpa_alphacrown'], result_dict['time_lirpa_alpha'] = vra, t_v

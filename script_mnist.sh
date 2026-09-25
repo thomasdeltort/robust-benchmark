@@ -1,8 +1,8 @@
 #!/bin/bash
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-MODEL_BASE_PATH="./train_models/retrained_models"
 #MODEL_BASE_PATH="./train_models/retrained_models"
+MODEL_BASE_PATH="./models_paper"
 OUTPUT_DIR="./results_lirpa_retrain_conventionnal_groupsort_debug"
 mkdir -p "$OUTPUT_DIR"
 
@@ -11,13 +11,13 @@ MODELS=(
 
 #"vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T15.0_bs256_lr0.0001_1781373330_TestAcc0.77_TestCRA69.19.pth"
 #"vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T15.0_bs256_lr0.0001_1781498785_TestAcc0.77_TestCRA69.06.pth"
-"vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T15.0_bs256_lr0.0001_1781499609_TestAcc0.76_TestCRA67.93.pth"
+#"vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T15.0_bs256_lr0.0001_1781499609_TestAcc0.76_TestCRA67.93.pth"
 #"vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T15.0_bs256_lr0.0001_1781500413_TestAcc0.76_TestCRA67.84.pth"
 #"vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T15.0_bs256_lr0.0001_1781501221_TestAcc0.77_TestCRA68.41.pth"
 #
 #
 #"vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T0.5_bs256_lr0.0001_1781169300_TestAcc0.63_TestCRA62.31.pth"
-"vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T0.5_bs256_lr0.0001_1781455385_TestAcc0.63_TestCRA62.54.pth"
+#"vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T0.5_bs256_lr0.0001_1781455385_TestAcc0.63_TestCRA62.54.pth"
 #"vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T0.5_bs256_lr0.0001_1781456207_TestAcc0.63_TestCRA62.44.pth"
 #"vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T0.5_bs256_lr0.0001_1781457029_TestAcc0.64_TestCRA62.82.pth"
 #"vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T0.5_bs256_lr0.0001_1781457846_TestAcc0.64_TestCRA62.97.pth"
@@ -38,10 +38,15 @@ MODELS=(
 #    "vanilla_CNNA_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T30.0_bs256_lr0.0003_1779887846_TestAcc0.69_TestCRA47.57.pth"
 #    "vanilla_CNNA_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T30.0_bs256_lr0.0003_1779889061_TestAcc0.70_TestCRA49.83.pth"
 
-    "vanilla_CNNA_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T1.0_bs256_lr0.0003_1776931197_acc0.64.pth"
-    "vanilla_CNNA_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T30.0_bs256_lr0.0003_1776944362_acc0.70.pth"
-    "vanilla_CNNA_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T0.5_bs256_lr0.001_eps0.155_light-_1766953221_acc0.62.pth"
-    "vanilla_CNNA_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T9.1414_bs256_lr0.0003_1776948490_acc0.60.pth"
+#    "vanilla_ConvLarge_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T0.6_bs256_lr0.0003_1777019976_acc0.67.pth"
+#    "vanilla_ConvLarge_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T45.0_bs256_lr0.0003_1777049688_acc0.81.pth"
+#    "vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T0.5_bs256_lr0.0003_1776927248_acc0.65.pth"
+    "vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T15.0_bs256_lr0.0003_1777005598_acc0.73.pth"
+    
+#    "vanilla_CNNA_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T1.0_bs256_lr0.0003_1776931197_acc0.64.pth"
+#    "vanilla_CNNA_CIFAR10_1_LIP_Bjork_cifar10_tau_a250.0_T30.0_bs256_lr0.0003_1776944362_acc0.70.pth"
+#    "vanilla_CNNA_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T0.5_bs256_lr0.001_eps0.155_light-_1766953221_acc0.62.pth"
+#    "vanilla_CNNA_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T9.1414_bs256_lr0.0003_1776948490_acc0.60.pth"
     
 #    "vanilla_CNNA_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T0.5_bs256_lr0.001_1779890271_TestAcc0.60_TestCRA56.43.pth"
 #    "vanilla_CNNA_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T0.5_bs256_lr0.001_1779891515_TestAcc0.59_TestCRA56.03.pth"
@@ -95,7 +100,7 @@ for model_file in "${MODELS[@]}"; do
     echo "Processing $arch_name ..."
 
     if python main_auto.py \
-        --model_path "$FULL_MODEL_PATH" \
+        --model_path "/lustre/fswork/projects/rech/syo/utf64nw/robust-benchmark/models_paper/vanilla_ConvLarge_CIFAR10_1_LIP_GNP_cifar10_tau_a250.0_T15.0_bs256_lr0.0003_1777005598_acc0.73.pth" \
         --model "$arch_name" \
         --high_tau \
         --dataset 'cifar10' \
@@ -105,28 +110,28 @@ for model_file in "${MODELS[@]}"; do
         --epsilon_max 0.031372 \
         --num_points 1 \
         --split_index 1 \
-        --use_conventional_groupsort \
-        --solvers_config '{"aa": True, "cra": True, "cra_pi": True, "alphacrown": True, "heavy_certified": False, "hybrid": True}' ; then
+        --otherpoints \
+        --solvers_config '{"aa": True, "cra": True, "cra_pi": True, "alphacrown": False, "heavy_certified": True, "hybrid": False}' ; then
         echo "✅ Done. (Saved to $csv_name)"
     else
         echo "❌ Failed."
     fi
-        if python main_auto.py \
-        --model_path "$FULL_MODEL_PATH" \
-        --model "$arch_name" \
-        --high_tau \
-        --dataset 'cifar10' \
-        --output_csv "$csv_name" \
-        --start_step 0 \
-        --batch_size 1 \
-        --epsilon_max 0.141176 \
-        --num_points 1 \
-        --split_index 1 \
-        --use_conventional_groupsort \
-        --solvers_config '{"aa": True, "cra": True, "cra_pi": True, "alphacrown": True, "heavy_certified": False, "hybrid": True}' ; then
-        echo "✅ Done. (Saved to $csv_name)"
-    else
-        echo "❌ Failed."
-    fi
+#        if python main_auto.py \
+#        --model_path "$FULL_MODEL_PATH" \
+#        --model "$arch_name" \
+#        --high_tau \
+#        --dataset 'cifar10' \
+#        --output_csv "$csv_name" \
+#        --start_step 0 \
+#        --batch_size 1 \
+#        --epsilon_max 0.141176 \
+#        --num_points 1 \
+#        --split_index 1 \
+#        --use_conventional_groupsort \
+#        --solvers_config '{"aa": True, "cra": True, "cra_pi": True, "alphacrown": True, "heavy_certified": False, "hybrid": True}' ; then
+#        echo "✅ Done. (Saved to $csv_name)"
+#    else
+#        echo "❌ Failed."
+#    fi
 done
 echo "---------------------------------------------------"

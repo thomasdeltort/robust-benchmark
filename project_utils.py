@@ -1329,6 +1329,7 @@ def compute_alphacrown_vra_and_time(
     dummy_input = correct_images[0:1].to(device)
     bounded_model = BoundedModule(model, dummy_input, bound_opts={"conv_mode": selected_conv_mode}, verbose=False)
     bounded_model.eval()
+    bounded_model.to(device)
 
     print(f"Verifying {len(correct_images)} samples in {num_batches} batches (Starting from batch {start_batch+1})...")
 

@@ -355,8 +355,9 @@ if __name__ == '__main__':
     parser.add_argument('--no_aa', action='store_true')
     parser.add_argument('--run_full_sdp', action='store_true')
 
-    parser.add_argument('--lr_alpha', type=float, default=0.1)
-    parser.add_argument('--lr_lambda', type=float, default=0.1)
+    parser.add_argument('--lr_alpha', type=float, default=0.5)
+    parser.add_argument('--lr_lambda', type=float, default=0.05)
+    parser.add_argument('--high_tau', action='store_true', help='Use high tau for SDP-CROWN')
     
     args = parser.parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -367,6 +368,10 @@ if __name__ == '__main__':
     # Updates the 'args' object with the auto-detected metadata
     for k, v in config.items():
         setattr(args, k, v)
+    if not hasattr(args, 'model'):
+        args.model = f"{config['dataset']}_{config['arch']}"
+    if not hasattr(args, 'high_tau'):
+        args.high_tau = False
     # --------------------------
 
     print(f"Loading {config['dataset']}...")
@@ -400,6 +405,9 @@ if __name__ == '__main__':
     print(f"Computing Analytical Certificates...")
     global_cra, lln_cra = compute_analytical_cras(model, dataset, labels, eps_backbone, config, device)
 
+
+    print(f"  • CRA     : {global_cra:.2f}%")
+
     era, verification_candidates = None, clean_indices
 
     if not args.no_aa:
@@ -420,11 +428,45 @@ if __name__ == '__main__':
         device, classes, args, config
     )
 
+    # Option 3: Full Network Verification (Optional)
+    full_vra = None
+    full_exec_time = None
+    if getattr(args, 'run_full_sdp', False) and config['arch'] == 'ConvLarge':
+        print(f"\n--- Running FULL Network SDP-CROWN for {config['arch']} ---")
+        
+        # In case the model isn't recognized as starting with an affine layer by auto_LiRPA
+        try:
+            full_model_ready = wrap_with_identity(model, dataset[0:1].to(device))
+            print("Wrapped full model with Identity Affine layer.")
+        except Exception:
+            full_model_ready = model
+            print("Using model as-is for full verification.")
+
+        has_groupsort_full = any(isinstance(m, GroupSort_General) for m in full_model_ready.modules())
+        
+        # For full verification, the epsilon bound applies directly to the image input
+        if str(args.norm) == 'inf':
+            input_dim = dataset[0].numel()
+            full_eps = eps_rescaled * np.sqrt(input_dim) 
+        else:
+            full_eps = eps_rescaled
+
+        start_time_full = time.time()
+        
+        # ?? INDEPENDENT STUDY: Pass clean_indices directly, bypassing verification_candidates (AA results)
+        full_vra, _, _ = compute_sdp_crown_vra(
+            dataset, labels=labels, model=full_model_ready, radius=full_eps, 
+            clean_output=clean_indices, device=device, classes=classes, 
+            args=args, batch_size=args.batch_size, return_robust_points=True, 
+            x_U=None, x_L=None, groupsort=has_groupsort_full
+        )
+        full_exec_time = time.time() - start_time_full
+
     print(f"\n? Final Results:")
     print(f"  • VRA (Hybrid)     : {vra:.2f}%")
     
     # Save Results
-    results_file = "verification_results_updated.csv"
+    results_file = "verification_results_updated_full.csv"
     results_data = {
         "Model": os.path.basename(args.model_path), 
         "Dataset": config['dataset'],
@@ -438,7 +480,9 @@ if __name__ == '__main__':
         "Global_CRA": global_cra if global_cra is not None else "N/A",
         "LLN_CRA": lln_cra if lln_cra is not None else "N/A",
         "VRA": vra,
-        "Time_s": exec_time
+        "Time_s": exec_time,
+        "Full_VRA": full_vra if full_vra is not None else "",
+        "Full_Time_s": full_exec_time if full_exec_time is not None else ""
     }
     
     df = pd.DataFrame([results_data])
