@@ -25,7 +25,7 @@ sys.path.append('./..')
 try:
     from models import *
     from project_utils import *
-    sys.path.insert(0, "/lustre/fswork/projects/rech/syo/utf64nw/robust-benchmark/SDP-CROWN/")
+    sys.path.insert(0, "./SDP-CROWN/")
     import auto_LiRPA
     from auto_LiRPA import BoundedModule, BoundedTensor
     from sdp_crown import verified_sdp_crown

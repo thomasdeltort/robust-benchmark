@@ -246,7 +246,7 @@ def preprocess_cifar(image, inception_preprocess=False, perturbation=False):
         return (image - rescaled_means) / rescaled_devs
 
 def prepare_imagenette_sdp(
-    target_dir="/lustre/fswork/projects/rech/syo/utf64nw/robust-benchmark/prepared_data/imagenette", 
+    target_dir="./prepared_data/imagenette", 
     num_samples=200, 
     use_other=False
 ):
@@ -286,7 +286,7 @@ def prepare_imagenette_sdp(
     print(f"✅ Saved Imagenette samples to {x_path}")
     
 def prepare_tiny_imagenet_sdp(
-    target_dir="/lustre/fswork/projects/rech/syo/utf64nw/robust-benchmark/prepared_data/tiny_imagenet", 
+    target_dir="./prepared_data/tiny_imagenet", 
     num_samples=200
 ):
     x_path = os.path.join(target_dir, 'X_sdp.npy')
@@ -374,7 +374,7 @@ def load_dataset_benchmark(args):
         classes = 10
         
     elif "imagenette" in args.dataset.lower():
-        target_dir = os.path.join("/lustre/fswork/projects/rech/syo/utf64nw/robust-benchmark/prepared_data", 'imagenette')
+        target_dir = os.path.join("./prepared_data", 'imagenette')
         
         # 1. Automatically check and prepare 200 points if missing
         prepare_imagenette_sdp(target_dir=target_dir, num_samples=200)
@@ -448,7 +448,7 @@ def prepare_mnist_cifar_sdp(dataset_name, target_dir, num_samples=200, use_other
 
 
 def load_dataset_benchmark_auto(args):
-    prepared_base_dir = "/lustre/fswork/projects/rech/syo/utf64nw/robust-benchmark/prepared_data"
+    prepared_base_dir = "./prepared_data"
     
     # Check if the flag is active
     use_other = getattr(args, 'otherpoints', False)
@@ -1219,7 +1219,7 @@ def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indic
     return cra, mean_time_per_image
 
 import sys
-sys.path.insert(0,"/lustre/fswork/projects/rech/syo/utf64nw/robust-benchmark/SDP-CROWN/")
+sys.path.insert(0,"./SDP-CROWN/")
 import auto_LiRPA
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
@@ -1461,7 +1461,7 @@ import time
 import torch
 import numpy as np
 
-sys.path.append("/lustre/fswork/projects/rech/syo/utf64nw/robust-benchmark/alpha-beta-CROWN/complete_verifier")
+sys.path.append("./alpha-beta-CROWN/complete_verifier")
 from abcrown import ABCROWN # Import the main class from your script
 
 
@@ -1548,7 +1548,7 @@ def compute_alphabeta_vra_and_time(dataset_name, model_name, model_path, epsilon
     return true_vra, avg_time
 
 
-sys.path.append("/lustre/fswork/projects/rech/syo/utf64nw/robust-benchmark/SDP-CROWN/")
+sys.path.append("./SDP-CROWN/")
 from sdp_crown import verified_sdp_crown
 
 def compute_sdp_crown_vra(dataset, labels, model, radius, clean_output, device, classes, args, batch_size=1, return_robust_points=False, x_U=None, x_L=None, groupsort=False, remove_sparse_ibp=False):
