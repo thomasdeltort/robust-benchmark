@@ -8,9 +8,8 @@ Run the following commands in your terminal:
 
 ```bash
 # 1. Clone the main benchmark repository
-git clone [https://github.com/thomasdeltort/robust-benchmark.git](https://github.com/thomasdeltort/robust-benchmark.git)
+wget [https://anonymous.4open.science/api/repo/robust-benchmark-DAF2/zip](https://anonymous.4open.science/api/repo/robust-benchmark-DAF2/zip) -O robust-benchmark.zip && unzip robust-benchmark.zip -d robust-benchmark && rm robust-benchmark.zip
 cd robust-benchmark
-
 # 2. Download and extract required sub-repositories anonymously
 wget [https://anonymous.4open.science/api/repo/SDP-CROWN-9D8C/zip](https://anonymous.4open.science/api/repo/SDP-CROWN-9D8C/zip) -O SDP-CROWN.zip && unzip SDP-CROWN.zip -d SDP-CROWN && rm SDP-CROWN.zip
 wget [https://anonymous.4open.science/api/repo/alpha-beta-CROWN-4EBF/zip](https://anonymous.4open.science/api/repo/alpha-beta-CROWN-4EBF/zip) -O alpha-beta-CROWN.zip && unzip alpha-beta-CROWN.zip -d alpha-beta-CROWN && rm alpha-beta-CROWN.zip
