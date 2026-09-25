@@ -1,5 +1,7 @@
 import torch
 import numpy as np
+import traceback
+import sys
 import argparse
 import os
 import time
@@ -35,6 +37,7 @@ model_zoo = {
         "ConvSmall_CIFAR10_1_LIP": ConvSmall_CIFAR10_1_LIP if 'ConvSmall_CIFAR10_1_LIP' in globals() else None,
         "ConvDeep_CIFAR10_1_LIP": ConvDeep_CIFAR10_1_LIP if 'ConvDeep_CIFAR10_1_LIP' in globals() else None,
         "ConvLarge_CIFAR10_1_LIP": ConvLarge_CIFAR10_1_LIP if 'ConvLarge_CIFAR10_1_LIP' in globals() else None,
+        "VGG13_1_LIP_CIFAR10" : VGG13_1_LIP_GNP_CIFAR10 if 'VGG13_1_LIP_CIFAR10' in globals() else None,
 
         # --- 1-Lipschitz models (GNP technique) ---
         "MLP_MNIST_1_LIP_GNP": MLP_MNIST_1_LIP_GNP if 'MLP_MNIST_1_LIP_GNP' in globals() else None,
@@ -71,7 +74,12 @@ model_zoo = {
         "ResNet18_1_LIP_Bjork": ResNet18_1_LIP_Bjork if 'ResNet18_1_LIP_Bjork' in globals() else None,
         "ResNet18_1_LIP_GNP_Imagenette": ResNet18_1_LIP_GNP_Imagenette if 'ResNet18_1_LIP_GNP_Imagenette' in globals() else None,
         "ResNet18_1_LIP_Bjork_Imagenette": ResNet18_1_LIP_Bjork_Imagenette if 'ResNet18_1_LIP_Bjork_Imagenette' in globals() else None,
-    }
+        
+        "VGG13_1_LIP_Bjork_Imagenette": VGG13_1_LIP_Bjork_Imagenette if 'VGG13_1_LIP_Bjork_Imagenette' in globals() else None,
+        "VGG13_1_LIP_GNP_Imagenette": VGG13_1_LIP_GNP_Imagenette if 'VGG13_1_LIP_GNP_Imagenette' in globals() else None,
+        "VGG16_1_LIP_Bjork_Imagenette": VGG16_1_LIP_Bjork_Imagenette if 'VGG16_1_LIP_Bjork_Imagenette' in globals() else None,
+        "VGG16_1_LIP_GNP_Imagenette": VGG16_1_LIP_GNP_Imagenette if 'VGG16_1_LIP_GNP_Imagenette' in globals() else None,
+}
     
 def find_max_epsilon_binary_CRA(images, model, clean_indices, args, L, tol=0.0001):
     """
@@ -157,12 +165,18 @@ def main():
     parser.add_argument('--end', default=200, type=int, help='end index for the dataset')
     parser.add_argument('--lr_alpha', default=0.5, type=float, help='alpha learning rate')
     parser.add_argument('--lr_lambda', default=0.05, type=float, help='lambda learning rate')
-    parser.add_argument('--high_tau', default=False, type=bool, help='Training temperature high/low')
+    parser.add_argument('--high_tau', action='store_true', help='Training temperature high/low')
     parser.add_argument('--split_index', default=-1, type=int, help='Layer index to split the model for Hybrid verification. -1 disables hybrid.')
     parser.add_argument('--sdp', default=False, type=bool, help='If true, sdp verification used for hybrid')
+    parser.add_argument('--hybrid_backend', type=str, default='alphacrown', 
+                        choices=['sdp', 'crown', 'alphacrown', 'ibpcrown'], 
+                        help='Solver backend for the hybrid suffix verification.')
     parser.add_argument('--start_step', default=1, type=int, help='starting index of the epsilon scale')
+    parser.add_argument('--otherpoints', action='store_true', help='Use a disjoint set of 200 points for evaluation')
     
     parser.add_argument('--epsilon_max', type=float, default=None, help='Manually set the maximum epsilon for paving. If None, it is computed via binary search.')
+    parser.add_argument('--use_conventional_groupsort', action='store_true', 
+                        help='If set, recursively replaces GroupSort_General with GroupSort2Conventional')
     
     # 2. Accept the config as a string
     parser.add_argument('--solvers_config', type=str, default="{}", 
@@ -192,15 +206,46 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     images, targets, classes = load_dataset_benchmark_auto(args)
     model = load_model(args, model_zoo, device)
+    print("images shape", images.shape)
+    # --- NEW LOGIC: Replace GroupSort if requested ---
+    if args.use_conventional_groupsort:
+        print("\n--- PREPARING MODEL ---")
+        print("Replacing GroupSort_General with GroupSort2Conventional...")
+        replace_groupsort_conventional(model)
+        print(model)
+        
+    # Ensure model is on the right device and in eval mode after potential modification
+    model.to(device)
     model.eval()
 
+#    with torch.no_grad():
+#        images, targets = images.to(device), targets.to(device)
+#        output = model(images)
+#        predictions = output.argmax(dim=1)
+#        clean_indices = (predictions == targets).nonzero(as_tuple=True)[0]
+#        clean_acc = (len(clean_indices) / len(targets)) * 100
+#        print(f"Clean Accuracy: {clean_acc:.2f}% ({len(clean_indices)} samples)")print("\n--- Computing Clean Accuracy (Batched) ---")
     with torch.no_grad():
-        images, targets = images.to(device), targets.to(device)
-        output = model(images)
-        predictions = output.argmax(dim=1)
-        clean_indices = (predictions == targets).nonzero(as_tuple=True)[0]
-        clean_acc = (len(clean_indices) / len(targets)) * 100
+        all_preds = []
+        eval_bs = 32  # Small batch size to prevent OOM
+        
+        # Process images in batches
+        for i in range(0, images.shape[0], eval_bs):
+            batch_imgs = images[i:i+eval_bs].to(device)
+            batch_out = model(batch_imgs)
+            # Instantly move predictions to CPU
+            all_preds.append(batch_out.argmax(dim=1).cpu())
+            
+        predictions = torch.cat(all_preds, dim=0)
+        targets_cpu = targets.cpu()
+        
+        # Calculate clean indices
+        clean_indices = (predictions == targets_cpu).nonzero(as_tuple=True)[0]
+        clean_acc = (len(clean_indices) / len(targets_cpu)) * 100
+        
+        # Keep clean_indices on the CPU for now; functions will move them as needed
         print(f"Clean Accuracy: {clean_acc:.2f}% ({len(clean_indices)} samples)")
+
 
     registry = RobustnessRegistry(
         model_name=args.model,
@@ -336,17 +381,27 @@ def main():
         if solvers["alphacrown"]:
             try:
                 vra, t_v, idx_alpha = compute_alphacrown_vra_and_time(
-                    images, targets, model, eps_rescaled, clean_indices, args, 
+                    images, targets, model, float(eps_rescaled), clean_indices, args, 
                     batch_size=args.batch_size, norm=args.norm, return_robust_points=True
                 )
                 result_dict['lirpa_alphacrown'], result_dict['time_lirpa_alpha'] = vra, t_v
                 registry.register(eps, "alphacrown", idx_alpha)
                 certified_indices_union.update(idx_alpha.cpu().tolist())
                 if vra <= 0: solvers["alphacrown"] = False
+#            except Exception as e:
+#                print(f"Alpha-CROWN Failed: {e}")
+#                oom_occurred = True
+#                result_dict['lirpa_alphacrown'], result_dict['time_lirpa_alpha'] = -1.0, 0.0
             except Exception as e:
-                print(f"Alpha-CROWN Failed: {e}")
-                oom_occurred = True
-                result_dict['lirpa_alphacrown'], result_dict['time_lirpa_alpha'] = -1.0, 0.0
+                print("\n" + "="*60)
+                print("?? FATAL ERROR CAUGHT: FULL STACK TRACE BELOW ??")
+                print("="*60)
+                
+                # This forces Python to print every step of the call stack
+                traceback.print_exc(file=sys.stdout)
+                
+                # Stop the script immediately so you can read the output
+                raise SystemExit("Halting execution to inspect the trace.")
         else:
             result_dict['lirpa_alphacrown'], result_dict['time_lirpa_alpha'] = 0.0, 0.0
 
@@ -370,6 +425,25 @@ def main():
                     groupsort = True if ("GNP" in args.model or "Bjork" in args.model) else False
                     orig_tau = args.high_tau
                     
+#                    # Run 1: high_tau=False
+#                    args.high_tau = False
+#                    sdp_acc_f, sdp_t_f, sdp_idx_f = 0.0, 0.0, torch.tensor([], device=device)
+#                    try:
+#                        sdp_acc_f, sdp_t_f, sdp_idx_f = compute_sdp_crown_vra(
+#                            images, targets, model, float(eps_rescaled), clean_indices, 
+#                            device, classes, args, batch_size=1, return_robust_points=True, groupsort=groupsort
+#                        )
+#                    except Exception as e: print(f"SDP (high_tau=False) OOM/Failed: {e}")
+#
+#                    # Run 2: high_tau=True
+#                    args.high_tau = True
+#                    sdp_acc_t, sdp_t_t, sdp_idx_t = 0.0, 0.0, torch.tensor([], device=device)
+#                    try:
+#                        sdp_acc_t, sdp_t_t, sdp_idx_t = compute_sdp_crown_vra(
+#                            images, targets, model, float(eps_rescaled), clean_indices, 
+#                            device, classes, args, batch_size=1, return_robust_points=True, groupsort=groupsort
+#                        )
+#                    except Exception as e: print(f"SDP (high_tau=True) OOM/Failed: {e}")
                     # Run 1: high_tau=False
                     args.high_tau = False
                     sdp_acc_f, sdp_t_f, sdp_idx_f = 0.0, 0.0, torch.tensor([], device=device)
@@ -378,7 +452,12 @@ def main():
                             images, targets, model, float(eps_rescaled), clean_indices, 
                             device, classes, args, batch_size=1, return_robust_points=True, groupsort=groupsort
                         )
-                    except Exception as e: print(f"SDP (high_tau=False) OOM/Failed: {e}")
+                    except Exception as e:
+                        print("\n" + "="*60)
+                        print("!! FATAL ERROR CAUGHT (high_tau=False) !!")
+                        print("="*60)
+                        traceback.print_exc(file=sys.stdout)
+                        raise SystemExit("Halting execution to inspect the trace.")
 
                     # Run 2: high_tau=True
                     args.high_tau = True
@@ -388,7 +467,12 @@ def main():
                             images, targets, model, float(eps_rescaled), clean_indices, 
                             device, classes, args, batch_size=1, return_robust_points=True, groupsort=groupsort
                         )
-                    except Exception as e: print(f"SDP (high_tau=True) OOM/Failed: {e}")
+                    except Exception as e:
+                        print("\n" + "="*60)
+                        print("!! FATAL ERROR CAUGHT (high_tau=True) !!")
+                        print("="*60)
+                        traceback.print_exc(file=sys.stdout)
+                        raise SystemExit("Halting execution to inspect the trace.")
 
                     # Pick the best result
                     if sdp_acc_t > sdp_acc_f:
@@ -397,8 +481,14 @@ def main():
                         v_acc, t_v, idx_sdp, best_tau = sdp_acc_f, sdp_t_f, sdp_idx_f, False
 
                     args.high_tau = orig_tau # Restore
+                    # --- Maintain CSV Compatibility ---
+                    # 1. Existing float column (Total time spent on SDP phase)
+                    result_dict['time_sdp'] = sdp_t_f + sdp_t_t
                     
-                    result_dict['sdp'], result_dict['time_sdp'] = v_acc, t_v
+                    # 2. NEW optional columns (Breakdown for analysis)
+                    result_dict['time_sdp_f'] = sdp_t_f  # high_tau=False
+                    result_dict['time_sdp_t'] = sdp_t_t  # high_tau=True
+                    result_dict['sdp'] = v_acc
                     registry.register(eps, "sdp", idx_sdp)
                     certified_indices_union.update(idx_sdp.cpu().tolist())
                     print(f"    [SDP-CROWN] Best Acc: {v_acc:.2f}% (tau_high={best_tau})")
@@ -408,14 +498,20 @@ def main():
                 print(f"Heavy solver failed: {e}")
                 oom_occurred = True
                 result_dict['sdp'] = -1.0
+                result_dict['time_sdp'] = 0.0
+                result_dict['time_sdp_f'] = 0.0
+                result_dict['time_sdp_t'] = 0.0
         else:
-            result_dict['sdp'], result_dict['time_sdp'] = 0.0, 0.0
+            result_dict['sdp'] = 0.0
+            result_dict['time_sdp'] = 0.0
+            result_dict['time_sdp_f'] = 0.0
+            result_dict['time_sdp_t'] = 0.0
 
         # --- HYBRID VERIFICATION ---
         if solvers["hybrid"] and args.split_index > 0:
             try:
                 h_acc, t_h, idx_hybrid = compute_hybrid_vra(
-                    images, targets, model, eps_rescaled, clean_indices, device, classes, args, L_prefix=L_prefix_PI, sdp=args.sdp
+                    images, targets, model, eps_rescaled, clean_indices, device, classes, args, L_prefix=L_prefix_PI
                 )
                 result_dict['hybrid'], result_dict['time_hybrid'] = h_acc, t_h
                 registry.register(eps, "hybrid", idx_hybrid)

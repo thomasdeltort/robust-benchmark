@@ -6,12 +6,6 @@ import torch.nn as nn
 import os
 from models import * # Make sure this import works from your utils.py location
 import shutil
-# try:
-#     sys.path.append('/home/aws_install/robustess_project/lip_notebooks/notebooks_creation_models')
-#     from VGG_Arthur import HKRMultiLossLSE
-# except ImportError:
-#     print("Warning: Could not import HKRMultiLossLSE. Using standard CrossEntropyLoss for evaluation.")
-# import pickle
 import numpy as np
 import torchattacks
 import matplotlib.pyplot as plt
@@ -27,120 +21,114 @@ from torchvision import datasets
 from torch.utils.data import DataLoader
 
 
+import os
+import torch
+from torch.utils.data import DataLoader, Subset
+from torchvision import datasets
+from torchvision.transforms import v2
+
+# ==========================================
+# Helper Function for Train/Val Split
+# ==========================================
+def split_train_val(dataset_aug, dataset_unaug, val_split=0.1, seed=42):
+    """
+    Splits datasets into train and val subsets using the same indices,
+    ensuring the val set gets unaugmented data.
+    """
+    num_samples = len(dataset_aug)
+    # Generate reproducible random indices
+    indices = torch.randperm(num_samples, generator=torch.Generator().manual_seed(seed)).tolist()
+    
+    split_idx = int(val_split * num_samples)
+    val_indices = indices[:split_idx]
+    train_indices = indices[split_idx:]
+    
+    train_subset = Subset(dataset_aug, train_indices)
+    val_subset = Subset(dataset_unaug, val_indices)
+    
+    return train_subset, val_subset
+
+# ==========================================
+# Dataset Loaders
+# ==========================================
 
 def load_cifar10(batch_size, aug_level='medium'):
-    """
-    Args:
-        batch_size (int): Size of the batch.
-        aug_level (str): Level of augmentation ('none', 'light', 'medium', 'heavy').
-    """
-    
-    
     # 1. Define Common Base and Normalization
-    # These are applied to all levels and the test set
     base_transforms = [
         v2.ToImage(),
         v2.ToDtype(torch.float32, scale=True),
     ]
     
     norm_transform = v2.Normalize(
-        mean=(0.49139968, 0.48215827, 0.44653124),
+        mean=(0.4914, 0.4822, 0.4465),
         std=(0.225, 0.225, 0.225)
     )
 
     # 2. Select Augmentation Strategy
     augmentations = []
-
     if aug_level == 'none':
-        # No extra augmentations
         pass
-
     elif aug_level == 'light':
-        # Standard CIFAR-10 augmentations (Crop + Flip)
         augmentations = [
             v2.RandomCrop((32, 32), padding=4),
             v2.RandomHorizontalFlip(p=0.5),
         ]
-
     elif aug_level == 'medium':
-        # Your specific implementation (Affine + ColorJitter)
         augmentations = [
             v2.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
-            v2.RandomAffine(
-                degrees=5,           # Rotate by a maximum of 5 degrees
-                translate=(0.05, 0.05) # Shift by a maximum of 5%
-            ),
+            v2.RandomAffine(degrees=5, translate=(0.05, 0.05)),
         ]
-
     elif aug_level == 'heavy':
-        # State-of-the-art style (RandAugment + Erasing)
         augmentations = [
             v2.RandAugment(num_ops=2, magnitude=9),
             v2.RandomHorizontalFlip(), 
             v2.RandomErasing(p=0.25, scale=(0.02, 0.1), ratio=(0.3, 3.3), value='random')
         ]
-    
     else:
-        raise ValueError(f"Invalid aug_level: {aug_level}. Choose 'none', 'light', 'medium', or 'heavy'.")
+        raise ValueError(f"Invalid aug_level: {aug_level}.")
 
     # 3. Compose Transforms
     train_transforms = v2.Compose(base_transforms + augmentations + [norm_transform])
-    
     test_transforms = v2.Compose(base_transforms + [norm_transform])
 
-    # 4. Load Datasets
-    train_dataset = datasets.CIFAR10(
-        root='./data', train=True, transform=train_transforms, download=True
-    )
-    
-    test_dataset = datasets.CIFAR10(
-        root='./data', train=False, transform=test_transforms, download=True
-    )
+    # 4. Load Datasets (Load train twice for the split trick)
+    full_train_dataset_aug = datasets.CIFAR10(root='./data', train=True, transform=train_transforms, download=True)
+    full_train_dataset_unaug = datasets.CIFAR10(root='./data', train=True, transform=test_transforms, download=True)
+    test_dataset = datasets.CIFAR10(root='./data', train=False, transform=test_transforms, download=True)
 
-    # 5. Create Loaders
-    train_loader = DataLoader(
-        dataset=train_dataset, batch_size=batch_size, shuffle=True, num_workers=2
-    )
+    # 5. Split Train into Train (90%) and Val (10%)
+    train_subset, val_subset = split_train_val(full_train_dataset_aug, full_train_dataset_unaug, val_split=0.1)
 
-    test_loader = DataLoader(
-        dataset=test_dataset, batch_size=batch_size, shuffle=False, num_workers=2
-    )
+    # 6. Create Loaders
+    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True, num_workers=2)
+    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, num_workers=2)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
 
-    return train_loader, test_loader
+    return train_loader, val_loader, test_loader
 
 def load_mnist(batch_size):
-    train_set = datasets.MNIST(
-        root="./data",
-        download=True,
-        train=True,
-        transform=v2.ToTensor(),
-    )
+    # MNIST usually doesn't have heavy augmentations in basic setups, 
+    # but we still split it cleanly 90/10.
+    transform = v2.Compose([v2.ToImage(), v2.ToDtype(torch.float32, scale=True)])
+    
+    full_train_dataset = datasets.MNIST(root="./data", download=True, train=True, transform=transform)
+    test_dataset = datasets.MNIST(root="./data", download=True, train=False, transform=transform)
 
-    test_set = datasets.MNIST(
-        root="./data",
-        download=True,
-        train=False,
-        transform=v2.ToTensor(),
-    )
+    # Since there are no augmentations, we can use the same dataset for both args
+    train_subset, val_subset = split_train_val(full_train_dataset, full_train_dataset, val_split=0.1)
 
-    train_loader = torch.utils.data.DataLoader(train_set, batch_size, shuffle=True)
-    test_loader = torch.utils.data.DataLoader(test_set, batch_size)
-    return train_loader, test_loader
+    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    
+    return train_loader, val_loader, test_loader
     
 def load_imagenette(batch_size, aug_level='medium'):
-    """
-    Args:
-        batch_size (int): Size of the batch.
-        aug_level (str): Level of augmentation ('none', 'light', 'medium', 'heavy').
-    """
-    # 1. Resolve Data Directory (Jean Zay $WORK or local ./data/)
     data_dir = os.path.join(os.environ.get('WORK', './data'), 'imagenette2-320')
     if not os.path.exists(data_dir):
         raise FileNotFoundError(f"Imagenette dataset not found at {data_dir}. Please download it first.")
 
-    # 2. Define Common Base and Normalization (Standard ImageNet properties)
-    mean = [0.485, 0.456, 0.406]
-    std = [0.225, 0.225, 0.225]
+    mean, std = [0.485, 0.456, 0.406], [0.225, 0.225, 0.225]
     
     base_transforms = [
         v2.ToImage(),
@@ -148,18 +136,11 @@ def load_imagenette(batch_size, aug_level='medium'):
     ]
     norm_transform = v2.Normalize(mean=mean, std=std)
 
-    # 3. Select Augmentation Strategy (Adapted for 224x224 resolution)
     augmentations = []
-    
     if aug_level == 'none':
         augmentations = [v2.Resize(256), v2.CenterCrop(224)]
-        
     elif aug_level == 'light':
-        augmentations = [
-            v2.RandomResizedCrop(224),
-            v2.RandomHorizontalFlip(p=0.5)
-        ]
-        
+        augmentations = [v2.RandomResizedCrop(224), v2.RandomHorizontalFlip(p=0.5)]
     elif aug_level == 'medium':
         augmentations = [
             v2.RandomResizedCrop(224),
@@ -167,7 +148,6 @@ def load_imagenette(batch_size, aug_level='medium'):
             v2.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
             v2.RandomAffine(degrees=5, translate=(0.05, 0.05))
         ]
-        
     elif aug_level == 'heavy':
         augmentations = [
             v2.RandomResizedCrop(224),
@@ -178,30 +158,74 @@ def load_imagenette(batch_size, aug_level='medium'):
     else:
         raise ValueError(f"Invalid aug_level: {aug_level}.")
 
-    # 4. Compose Transforms
     train_transforms = v2.Compose(augmentations + base_transforms + [norm_transform])
     test_transforms = v2.Compose([v2.Resize(256), v2.CenterCrop(224)] + base_transforms + [norm_transform])
 
-    # 5. Load Datasets
-    train_dataset = datasets.ImageFolder(os.path.join(data_dir, 'train'), transform=train_transforms)
+    # Load train twice for the split trick
+    train_folder = os.path.join(data_dir, 'train')
+    full_train_dataset_aug = datasets.ImageFolder(train_folder, transform=train_transforms)
+    full_train_dataset_unaug = datasets.ImageFolder(train_folder, transform=test_transforms)
+    
     test_dataset = datasets.ImageFolder(os.path.join(data_dir, 'val'), transform=test_transforms)
 
-    # 6. Create Loaders
+    # Split Train into Train (90%) and Val (10%)
+    train_subset, val_subset = split_train_val(full_train_dataset_aug, full_train_dataset_unaug, val_split=0.1)
+
+    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True, num_workers=4)
+    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, num_workers=4)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+
+    return train_loader, val_loader, test_loader
+    
+def load_tiny_imagenet(batch_size, aug_level='medium'):
+    data_dir = os.path.join(os.environ.get('WORK', './data'), 'tiny-imagenet-200')
+    
+    # Tiny ImageNet uses standard ImageNet normalization
+    mean, std = [0.485, 0.456, 0.406], [0.225, 0.225, 0.225]
+    
+    base_transforms = [
+        v2.ToImage(),
+        v2.ToDtype(torch.float32, scale=True),
+    ]
+    norm_transform = v2.Normalize(mean=mean, std=std)
+
+    augmentations = []
+    if aug_level == 'none':
+        pass # Already 64x64, no cropping needed
+    elif aug_level == 'light':
+        augmentations = [v2.RandomCrop(64, padding=4), v2.RandomHorizontalFlip(p=0.5)]
+    elif aug_level == 'medium':
+        augmentations = [
+            v2.RandomCrop(64, padding=4),
+            v2.RandomHorizontalFlip(p=0.5),
+            v2.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
+            v2.RandomAffine(degrees=5, translate=(0.05, 0.05))
+        ]
+
+    train_transforms = v2.Compose(augmentations + base_transforms + [norm_transform])
+    test_transforms = v2.Compose(base_transforms + [norm_transform])
+
+    train_folder = os.path.join(data_dir, 'train')
+    val_folder = os.path.join(data_dir, 'val')
+
+    # Load datasets
+    train_dataset = datasets.ImageFolder(train_folder, transform=train_transforms)
+    test_dataset = datasets.ImageFolder(val_folder, transform=test_transforms)
+
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
-    return train_loader, test_loader
+    return train_loader, test_loader, test_loader # (Train, Val, Test)
 
-def load_dataset(name, batch_size, aug_level = 'medium'):
-    if name=="mnist":
-        train_loader, test_loader = load_mnist(batch_size)
-    elif name=="cifar10":
-        train_loader, test_loader = load_cifar10(batch_size, aug_level)
-    elif name=="imagenette":
-        train_loader, test_loader = load_imagenette(batch_size, aug_level)
-    else :
+def load_dataset(name, batch_size, aug_level='medium'):
+    if name == "mnist":
+        return load_mnist(batch_size)
+    elif name == "cifar10":
+        return load_cifar10(batch_size, aug_level)
+    elif name == "imagenette":
+        return load_imagenette(batch_size, aug_level)
+    else:
         raise ValueError(f"Unexpected dataset: {name}")
-    return train_loader, test_loader
 
 def preprocess_cifar(image, inception_preprocess=False, perturbation=False):
     """
@@ -220,6 +244,116 @@ def preprocess_cifar(image, inception_preprocess=False, perturbation=False):
         return image / rescaled_devs
     else:
         return (image - rescaled_means) / rescaled_devs
+
+def prepare_imagenette_sdp(
+    target_dir="./prepared_data/imagenette", 
+    num_samples=200, 
+    use_other=False
+):
+    x_path = os.path.join(target_dir, 'X_sdp_other.npy' if use_other else 'X_sdp.npy')
+    y_path = os.path.join(target_dir, 'y_sdp_other.npy' if use_other else 'y_sdp.npy')
+
+    if os.path.exists(x_path) and os.path.exists(y_path):
+        return
+
+    print(f"⚠️ Imagenette points not found. Generating...")
+    os.makedirs(target_dir, exist_ok=True)
+
+    raw_data_dir = os.path.join(os.environ.get('WORK', './data'), 'imagenette2-320', 'val')
+    raw_transforms = v2.Compose([v2.Resize(256), v2.CenterCrop(224), v2.ToImage(), v2.ToDtype(torch.float32, scale=True)])
+    val_dataset = datasets.ImageFolder(raw_data_dir, transform=raw_transforms)
+    
+    classes = 10
+    points_per_class = num_samples // classes
+    class_counts = {i: 0 for i in range(classes)}
+    selected_images, selected_labels = [], []
+    
+    # Skip the first 2000 images if use_other is True
+    start_index = 2000 if use_other else 0
+
+    for idx, (img, label) in enumerate(val_dataset):
+        if idx < start_index: continue
+        
+        if class_counts[label] < points_per_class:
+            selected_images.append(img.permute(1, 2, 0).numpy())
+            selected_labels.append(label)
+            class_counts[label] += 1
+
+        if len(selected_images) == num_samples: break
+
+    np.save(x_path, np.array(selected_images, dtype=np.float32))
+    np.save(y_path, np.array(selected_labels, dtype=np.int64))
+    print(f"✅ Saved Imagenette samples to {x_path}")
+    
+def prepare_tiny_imagenet_sdp(
+    target_dir="./prepared_data/tiny_imagenet", 
+    num_samples=200
+):
+    x_path = os.path.join(target_dir, 'X_sdp.npy')
+    y_path = os.path.join(target_dir, 'y_sdp.npy')
+
+    # 1. Check if files already exist
+    if os.path.exists(x_path) and os.path.exists(y_path):
+        return
+
+    print(f"⚠️ Prepared Tiny ImageNet dataset not found at '{target_dir}'. Creating {num_samples}-sample balanced dataset...")
+    os.makedirs(target_dir, exist_ok=True)
+
+    # 2. Raw Tiny ImageNet validation set path (assuming you ran the fix script)
+    raw_data_dir = os.path.join(os.environ.get('WORK', './data'), 'tiny-imagenet-200', 'val')
+    if not os.path.exists(raw_data_dir):
+        raise FileNotFoundError(f"Raw Tiny ImageNet validation set not found at '{raw_data_dir}'. Please download and fix it first.")
+
+    # Convert images to 64x64 tensors in [0, 1] WITHOUT normalization yet
+    # Notice there is no Resize or Crop because Tiny ImageNet is natively 64x64!
+    raw_transforms = v2.Compose([
+        v2.ToImage(),
+        v2.ToDtype(torch.float32, scale=True)
+    ])
+
+    val_dataset = datasets.ImageFolder(raw_data_dir, transform=raw_transforms)
+    classes = 200
+    
+    # Calculate how many images per class (200 samples / 200 classes = 1 image per class)
+    points_per_class = max(1, num_samples // classes)  
+    class_counts = {i: 0 for i in range(classes)}
+
+    selected_images = []
+    selected_labels = []
+
+    # 3. Extract the images
+    for img, label in val_dataset:
+        if class_counts[label] < points_per_class:
+            # Convert PyTorch (C, H, W) -> Numpy (H, W, C)
+            img_np = img.permute(1, 2, 0).numpy()
+            selected_images.append(img_np)
+            selected_labels.append(label)
+            class_counts[label] += 1
+
+        if len(selected_images) == num_samples:
+            break
+
+    # Stack into numpy arrays matching the expected shape: (N, H, W, C)
+    X_sdp = np.array(selected_images, dtype=np.float32)  # Shape: (200, 64, 64, 3)
+    y_sdp = np.array(selected_labels, dtype=np.int64)    # Shape: (200,)
+
+    # Save arrays to target folder
+    np.save(x_path, X_sdp)
+    np.save(y_path, y_sdp)
+    print(f"✅ Successfully created and saved {num_samples} equilibrated Tiny ImageNet samples to '{target_dir}'.")
+
+def preprocess_imagenette(image, perturbation=False):
+    """
+    Preprocess Imagenette images and perturbations using ImageNet mean & std.
+    Input image shape: (N, H, W, C) in range [0, 1].
+    """
+    MEANS = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    
+    if perturbation:
+        return image / STD
+    else:
+        return (image - MEANS) / STD
 
 def load_dataset_benchmark(args):
     if "mnist" in args.dataset.lower():
@@ -240,74 +374,129 @@ def load_dataset_benchmark(args):
         classes = 10
         
     elif "imagenette" in args.dataset.lower():
-        # Load validation set directly from raw folders into memory
-        data_dir = os.path.join(os.environ.get('WORK', './data'), 'imagenette2-320', 'val')
+        target_dir = os.path.join("./prepared_data", 'imagenette')
         
-        mean = [0.485, 0.456, 0.406]
-        std = [0.229, 0.224, 0.225]
+        # 1. Automatically check and prepare 200 points if missing
+        prepare_imagenette_sdp(target_dir=target_dir, num_samples=200)
+
+        # 2. Load exactly like CIFAR
+        dataset = np.load(os.path.join(target_dir, 'X_sdp.npy'))
+        labels = np.load(os.path.join(target_dir, 'y_sdp.npy'))
         
-        test_transforms = v2.Compose([
-            v2.Resize(256),
-            v2.CenterCrop(224),
-            v2.ToImage(),
-            v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize(mean=mean, std=std)
-        ])
-        
-        val_dataset = datasets.ImageFolder(data_dir, transform=test_transforms)
-        
-        # Load the whole dataset into one batch for verification 
-        # (Imagenette val set is ~3.9k images, takes ~2.3GB of RAM)
-        loader = DataLoader(val_dataset, batch_size=len(val_dataset), shuffle=False)
-        dataset, labels = next(iter(loader))
-        
-        # Scale the epsilon range based on the minimum standard deviation of the dataset
-        range_val = args.radius / min(std)
+        # 3. Preprocess and format: (N, H, W, C) -> (N, C, H, W)
+        dataset = preprocess_imagenette(dataset)
+        dataset = torch.from_numpy(dataset).permute(0, 3, 1, 2)
+        labels = torch.from_numpy(labels)
+
+        # Scale epsilon range by min std (0.224)
+        std_min = 0.224
+        range_val = args.radius / std_min
         classes = 10
-        
+
     else:
         raise ValueError(f"Unexpected dataset: {args.dataset}")
         
     return dataset, labels, range_val, classes
+    
+def prepare_mnist_cifar_sdp(dataset_name, target_dir, num_samples=200, use_other=False):
+    """Universal generator for MNIST and CIFAR10."""
+    x_path = os.path.join(target_dir, 'X_sdp_other.npy' if use_other else 'X_sdp.npy')
+    y_path = os.path.join(target_dir, 'y_sdp_other.npy' if use_other else 'y_sdp.npy')
+    
+    if os.path.exists(x_path) and os.path.exists(y_path):
+        return # Files already exist, nothing to do!
+
+    print(f"⚠️ {dataset_name} points not found. Generating deterministic balanced set...")
+    os.makedirs(target_dir, exist_ok=True)
+    
+    # ADDED THIS: Point directly to your $WORK data directory
+    data_dir = os.path.join(os.environ.get('WORK', './'), 'data')
+    
+    if dataset_name == "mnist":
+        ds = datasets.MNIST(root=data_dir, train=False, download=True)
+        is_rgb = False
+    else:
+        ds = datasets.CIFAR10(root=data_dir, train=False, download=True)
+        is_rgb = True
+        
+    classes = 10
+    points_per_class = num_samples // classes
+    class_counts = {i: 0 for i in range(classes)}
+    
+    selected_images = []
+    selected_labels = []
+    
+    start_index = 2000 if use_other else 0
+    
+    for i in range(start_index, len(ds)):
+        img, label = ds[i]
+        if class_counts[label] < points_per_class:
+            img_np = np.array(img, dtype=np.float32) / 255.0
+            if not is_rgb: 
+                img_np = np.expand_dims(img_np, axis=-1)
+                
+            selected_images.append(img_np)
+            selected_labels.append(label)
+            class_counts[label] += 1
+            
+        if len(selected_images) == num_samples:
+            break
+            
+    np.save(x_path, np.array(selected_images, dtype=np.float32))
+    np.save(y_path, np.array(selected_labels, dtype=np.int64))
+    print(f"✅ Saved {num_samples} {dataset_name} samples to {x_path}")
+
 
 def load_dataset_benchmark_auto(args):
+    prepared_base_dir = "./prepared_data"
+    
+    # Check if the flag is active
+    use_other = getattr(args, 'otherpoints', False)
+    x_file = 'X_sdp_other.npy' if use_other else 'X_sdp.npy'
+    y_file = 'y_sdp_other.npy' if use_other else 'y_sdp.npy'
+
     if "mnist" in args.dataset.lower():
-        dataset = np.load('./prepared_data/mnist/X_sdp.npy')
-        labels = np.load('./prepared_data/mnist/y_sdp.npy')
-        dataset = torch.from_numpy(dataset).permute(0,3,1,2)
+        target_dir = os.path.join(prepared_base_dir, 'mnist')
+        prepare_mnist_cifar_sdp("mnist", target_dir, 200, use_other)
+        
+        dataset = np.load(os.path.join(target_dir, x_file))
+        labels = np.load(os.path.join(target_dir, y_file))
+        dataset = torch.from_numpy(dataset).permute(0, 3, 1, 2).contiguous()
         labels = torch.from_numpy(labels)
         classes = 10
         
     elif "cifar10" in args.dataset.lower():
-        dataset = np.load('./prepared_data/cifar/X_sdp.npy')
-        labels = np.load('./prepared_data/cifar/y_sdp.npy')
+        target_dir = os.path.join(prepared_base_dir, 'cifar')
+        prepare_mnist_cifar_sdp("cifar10", target_dir, 200, use_other)
+        
+        dataset = np.load(os.path.join(target_dir, x_file))
+        labels = np.load(os.path.join(target_dir, y_file))
         dataset = preprocess_cifar(dataset)
-        dataset = torch.from_numpy(dataset).permute(0,3,1,2)
+        dataset = torch.from_numpy(dataset).permute(0, 3, 1, 2).contiguous()
         labels = torch.from_numpy(labels)
         classes = 10
         
     elif "imagenette" in args.dataset.lower():
-        data_dir = os.path.join(os.environ.get('WORK', './data'), 'imagenette2-320', 'val')
-        
-        test_transforms = v2.Compose([
-            v2.Resize(256),
-            v2.CenterCrop(224),
-            v2.ToImage(),
-            v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.225, 0.225, 0.225])
-        ])
-        
-        val_dataset = datasets.ImageFolder(data_dir, transform=test_transforms)
-        loader = DataLoader(val_dataset, batch_size=len(val_dataset), shuffle=False)
-        dataset, labels = next(iter(loader))
+        target_dir = os.path.join(prepared_base_dir, 'imagenette')
+        prepare_imagenette_sdp(target_dir, 200, use_other)
+
+        dataset = np.load(os.path.join(target_dir, x_file))
+        labels = np.load(os.path.join(target_dir, y_file))
+        dataset = preprocess_imagenette(dataset)
+        dataset = torch.from_numpy(dataset).permute(0, 3, 1, 2).contiguous()
+        labels = torch.from_numpy(labels)
         classes = 10
-        
     else:
         raise ValueError(f"Unexpected dataset: {args.dataset}")
         
+    # --- NEW: Actually apply the start and end indices ---
+    start = getattr(args, 'start', 0)
+    end = getattr(args, 'end', len(dataset))
+    
+    dataset = dataset[start:end]
+    labels = labels[start:end]
+    
     return dataset, labels, classes
-
-
 
 
 def vanilla_export(model1):
@@ -431,66 +620,7 @@ def compute_linear_spectral_norm(weight):
     with torch.no_grad():
         return torch.linalg.norm(weight, ord=2).item()
 
-# --- 2. The Dynamic Model Analyzer ---
-#
-#def compute_model_lipschitz(model, input_shape=(1, 3, 32, 32), device='cuda'):
-#    """
-#    Propagates a dummy input through the network to capture shapes, 
-#    then computes the product of spectral norms (rho) for all learnable layers.
-#    """
-#    model = model.to(device)
-#    model.eval()
-#    
-#    # Dummy input to propagate shapes
-#    current_input = torch.randn(input_shape).to(device)
-#    
-#    L_global = 1.0
-#    print(f"\n{'Layer':<40} | {'Type':<15} | {'Spectral Norm (rho)':<10}")
-#    print("-" * 80)
-#
-#    # We iterate over immediate children (assuming Sequential structure from your examples)
-#    for name, module in model.named_children():
-#        
-#        # 1. Capture Input Shape
-#        in_shape = current_input.shape
-#        
-#        # 2. Run Forward Pass to get Output Shape and Next Input
-#        with torch.no_grad():
-#            current_input = module(current_input)
-#        out_shape = current_input.shape
-#        
-#        layer_rho = 1.0 # Default (Activations, Pooling, etc.)
-#        
-#        # 3. Compute Spectral Norm based on Type
-#        if isinstance(module, nn.Conv2d): 
-#            # Extract parameters safely (handling tuples vs ints)
-#            s = module.stride if isinstance(module.stride, tuple) else (module.stride, module.stride)
-#            p = module.padding if isinstance(module.padding, tuple) else (module.padding, module.padding)
-#            d = module.dilation if isinstance(module.dilation, tuple) else (module.dilation, module.dilation)
-#            
-#            layer_rho = power_iteration_conv(
-#                weight=module.weight,
-#                input_shape=in_shape,
-#                output_shape=out_shape,
-#                stride=s,
-#                padding=p,
-#                dilation=d,
-#                groups=module.groups
-#            )
-#            
-#        elif isinstance(module, nn.Linear):
-#            layer_rho = compute_linear_spectral_norm(module.weight)
-#            
-#        # 4. Update Global
-#        L_global *= layer_rho
-#        
-#        # Log non-trivial layers (rho != 1.0) or specifically Conv/Linear
-#        if isinstance(module, (nn.Conv2d, nn.Linear)):
-#            print(f"{name:<40} | {module.__class__.__name__:<15} | {layer_rho:.4f}")
-#
-#    print("-" * 80)
-#    # print(f"Computed Global Lipschitz Constant: {L_global:.4f}")
-#    return L_global
+
 
 def get_lipschitz_of_module(module, current_input):
     """
@@ -676,7 +806,7 @@ def add_result_and_sort(result_dict, base_csv_filepath, round_digits=3, norm='2'
     try:
         # Use 'w' to overwrite, but we have all previous data in all_data_dicts
         with open(csv_filepath, 'w', newline='') as file:
-            writer = csv.DictWriter(file, fieldnames=final_header)
+            writer = csv.DictWriter(file, fieldnames=final_header, extrasaction='ignore')
             writer.writeheader()
             writer.writerows(all_data_dicts)
         
@@ -747,187 +877,7 @@ def get_clean_title(filename):
     else:
         return "Robustness Evaluation"
 
-# def create_final_paper_plot(filepath, output_filename):
-#     """
-#     Generates the final plot with:
-#     - Expanded Title (Model + Dataset + GNP/Lip/Bjork).
-#     - Legend in Upper Right.
-#     - Distinct line styles.
-#     """
-#     # --- Load Data ---
-#     try:
-#         df = pd.read_csv(filepath)
-#     except FileNotFoundError:
-#         print(f"❌ Error: File '{filepath}' not found.")
-#         return
 
-#     # --- Prepare Title & Norm ---
-#     title_text = get_clean_title(filepath)
-#     filename_lower = os.path.basename(filepath).lower()
-#     norm_label = r"$\ell_\infty$" if "norm_inf" in filename_lower else r"$\ell_2$"
-    
-#     # --- Define Styles ---
-#     # Use empty tuple () for solid lines to fix TypeError
-#     styles = {
-#         'aa':               {'label': 'Upper Bound (Empirical)', 'color': '#8B0000', 'style': '--', 'dashes': (5, 3), 'zorder': 10},
-#         'certificate':      {'label': 'CRA',           'color': '#0072B2', 'style': '-',  'dashes': (),        'zorder': 5},
-#         # 'certificate_pi':   {'label': 'CRA (Pi)',      'color': "#850BF8", 'style': '--', 'dashes': (3, 1),    'zorder': 5}, # Teal/Greenish
-#         'lirpa_alphacrown': {'label': r'$\alpha$-CROWN', 'color': '#009E73', 'style': '-.', 'dashes': (3, 1, 1, 1), 'zorder': 6},
-#         'lirpa_betacrown':  {'label': r'$\beta$-CROWN',  'color': "#DDDA0E", 'style': '--', 'dashes': (5, 5),    'zorder': 7},
-#         'sdp':              {'label': 'SDP',           'color': '#CC79A7', 'style': ':',  'dashes': (1, 1),     'zorder': 4},
-#     }
-
-#     plot_methods = [m for m in styles.keys() if m in df.columns]
-#     print(plot_methods)
-#     # Exclusion Logic
-#     if 'norm_inf' in filename_lower and 'sdp' in plot_methods: 
-#         plot_methods.remove('sdp')
-#     else:
-#         # Assuming beta-crown is excluded for L2
-#         plot_methods.remove('lirpa_betacrown')
-#     print(plot_methods)
-#     # --- Plotting ---
-#     fig, ax = plt.subplots(figsize=(10, 7))
-
-#     # 1. Dynamic Shading (Gap)
-#     cert_cols = [m for m in plot_methods if m != 'aa']
-#     if 'aa' in df.columns and cert_cols:
-#         virtual_best = df[cert_cols].max(axis=1)
-#         ax.fill_between(
-#             df['epsilon'], 
-#             virtual_best, 
-#             df['aa'], 
-#             color='#D55E00', 
-#             alpha=0.10,      
-#             label='Verification Gap'
-#         )
-
-#     # 2. Draw Lines
-#     for method in plot_methods:
-#         s = styles[method]
-#         kwargs = {
-#             'label': s['label'],
-#             'color': s['color'],
-#             'linestyle': s['style'],
-#             'linewidth': 2.5,
-#             'alpha': 0.85,
-#             'zorder': s['zorder']
-#         }
-#         if s['dashes']: kwargs['dashes'] = s['dashes']
-        
-#         ax.plot(df['epsilon'], df[method], **kwargs)
-
-#     # --- Final Polish ---
-#     full_title = f"{title_text} ({norm_label})"
-#     ax.set_title(full_title, pad=20, weight='bold')
-#     ax.set_xlabel(f"Perturbation Radius ({norm_label})", labelpad=10)
-#     ax.set_ylabel("Robust Accuracy (%)", labelpad=10)
-    
-#     ax.set_ylim(-5, 105)
-#     ax.set_xlim(left=0, right=df['epsilon'].max())
-#     ax.grid(True, linestyle=':', alpha=0.6)
-    
-#     # Legend - UPPER RIGHT
-#     ax.legend(loc='upper right', frameon=True, fancybox=False, edgecolor='black', framealpha=1.0)
-
-#     plt.tight_layout()
-#     plt.savefig(output_filename, dpi=300)
-#     print(f"✅ Saved updated plot to {output_filename}")
-
-# def create_final_paper_plot(filepath, output_filename):
-#     """
-#     Generates the final plot including Hybrid, CRA, AA, and CRA-PI.
-#     """
-#     import pandas as pd
-#     import matplotlib.pyplot as plt
-#     import os
-
-#     # --- Load Data ---
-#     try:
-#         df = pd.read_csv(filepath)
-#     except FileNotFoundError:
-#         print(f"❌ Error: File '{filepath}' not found.")
-#         return
-
-#     # --- Prepare Title & Norm ---
-#     title_text = get_clean_title(filepath)
-#     filename_lower = os.path.basename(filepath).lower()
-#     norm_label = r"$\ell_\infty$" if "norm_inf" in filename_lower else r"$\ell_2$"
-    
-#     # --- Define Styles ---
-#     # Added 'hybrid' and 'certificate_pi' with distinct colors/styles
-#     styles = {
-#         'aa':               {'label': 'Upper Bound (Empirical)', 'color': '#8B0000', 'style': '--', 'dashes': (5, 3), 'zorder': 10},
-#         'certificate':      {'label': 'CRA',                    'color': '#0072B2', 'style': '-',  'dashes': (),      'zorder': 5},
-#         'certificate_pi':   {'label': 'CRA (Power Iteration)',  'color': "#850BF8", 'style': ':',  'dashes': (1, 1),  'zorder': 6}, 
-#         'hybrid':           {'label': 'Hybrid Verification',    'color': '#E69F00', 'style': '-',  'dashes': (),      'zorder': 9}, # Orange
-#         'lirpa_alphacrown': {'label': r'$\alpha$-CROWN',        'color': '#009E73', 'style': '-.', 'dashes': (3, 1, 1, 1), 'zorder': 7},
-#         'lirpa_betacrown':  {'label': r'$\beta$-CROWN',         'color': "#DDDA0E", 'style': '--', 'dashes': (5, 5),  'zorder': 8},
-#         'sdp':              {'label': 'SDP',                    'color': '#CC79A7', 'style': ':',  'dashes': (1, 1),  'zorder': 4},
-#     }
-
-#     # --- Filtering Logic ---
-#     # We want to plot what is available in the dataframe, provided it's in our style map
-#     available_methods = [m for m in styles.keys() if m in df.columns]
-    
-#     # Exclusion Logic: Cleanup based on Norm type
-#     plot_methods = available_methods.copy()
-#     if 'norm_inf' in filename_lower:
-#         if 'sdp' in plot_methods: plot_methods.remove('sdp')
-#     else:
-#         if 'lirpa_betacrown' in plot_methods: plot_methods.remove('lirpa_betacrown')
-
-#     # --- Plotting ---
-#     fig, ax = plt.subplots(figsize=(10, 7))
-
-#     # 1. Dynamic Shading (Verification Gap)
-#     # We shade between the best of ALL certified methods and the AA empirical upper bound
-#     cert_cols = [m for m in plot_methods if m != 'aa']
-#     if 'aa' in df.columns and cert_cols:
-#         virtual_best = df[cert_cols].max(axis=1)
-#         ax.fill_between(
-#             df['epsilon'], 
-#             virtual_best, 
-#             df['aa'], 
-#             color='#D55E00', 
-#             alpha=0.10,      
-#             label='Verification Gap'
-#         )
-
-#     # 2. Draw Lines
-#     for method in plot_methods:
-#         s = styles[method]
-#         kwargs = {
-#             'label': s['label'],
-#             'color': s['color'],
-#             'linestyle': s['style'],
-#             'linewidth': 3.0 if method == 'hybrid' else 2.5, # Make hybrid slightly thicker
-#             'alpha': 0.9,
-#             'zorder': s['zorder']
-#         }
-#         if s['dashes']: kwargs['dashes'] = s['dashes']
-        
-#         ax.plot(df['epsilon'], df[method], **kwargs)
-
-#     # --- Final Polish ---
-#     full_title = f"{title_text} ({norm_label})"
-#     ax.set_title(full_title, pad=20, fontdict={'fontsize': 16, 'weight': 'bold'})
-#     ax.set_xlabel(f"Perturbation Radius ({norm_label})", fontsize=14, labelpad=10)
-#     ax.set_ylabel("Robust Accuracy (%)", fontsize=14, labelpad=10)
-    
-#     ax.set_ylim(-5, 105)
-#     ax.set_xlim(left=0, right=df['epsilon'].max())
-#     ax.grid(True, linestyle=':', alpha=0.6)
-    
-#     # Legend - UPPER RIGHT
-#     # Set facecolor to white to ensure it covers the grid lines
-#     ax.legend(loc='upper right', frameon=True, fancybox=False, 
-#               edgecolor='black', framealpha=1.0, fontsize=11)
-
-#     plt.tight_layout()
-#     plt.savefig(output_filename, dpi=300)
-#     plt.close() # Close to free memory during large sweeps
-#     print(f"✅ Saved updated plot to {output_filename}")
 def create_final_paper_plot_PI(filepath, output_filename):
     """
     Generates the final plot including CRA, AA, CRA-PI, and CROWN/SDP methods.
@@ -1200,99 +1150,76 @@ def compute_certificates_CRA(images, model, epsilon, correct_indices, norm='2', 
     
     return certificates.cpu(), cra, time_per_img
 
-def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indices, norm='2', dataset_name='cifar10', return_robust_points=False):
-    """
-    Computes Empirical Robust Accuracy (CRA) against AutoAttack (L2/Linf).
 
-    Args:
-        images (torch.Tensor): The entire batch of input images.
-        targets (torch.Tensor): The corresponding labels for all images.
-        model (torch.nn.Module): The model to be attacked.
-        epsilon (float): The AutoAttack radius.
-        clean_indices (torch.Tensor): Indices of images that were initially classified correctly.
-        norm (str): '2' or 'inf'.
-        return_robust_points (bool): If True, returns the global indices of robust points.
-
-    Returns:
-        (cra, mean_time_per_image) OR (cra, mean_time_per_image, robust_indices)
-    """
+def compute_autoattack_era_and_time(images, targets, model, epsilon, clean_indices, norm='2', dataset_name='cifar10', return_robust_points=False, batch_size=16):
+    import time
+    
     device = next(model.parameters()).device
     total_num_images = images.shape[0] 
-
-    # --- Step 1: Filter the dataset ---
+    
     # We only attack images that were originally correct
-    correct_images = images[clean_indices].contiguous().to(device)
-    correct_targets = targets[clean_indices].to(device)
+    correct_images = images[clean_indices]
+    correct_targets = targets[clean_indices]
 
-    # Handle edge case: No correct images to begin with
     if len(correct_images) == 0:
-        if return_robust_points:
+        if return_robust_points: 
             return 0.0, 0.0, torch.tensor([], dtype=torch.long, device=device)
         return 0.0, 0.0
+
+    # --- Initialize AutoAttack ---
+    import torchattacks
+    atk_norm = 'L2' if norm == '2' else 'Linf'
+    atk = torchattacks.AutoAttack(model, norm=atk_norm, eps=epsilon)
     
-    # --- Step 2: Set up Attack ---
-    if norm == '2':
-        atk = torchattacks.AutoAttack(model, norm='L2', eps=epsilon)
-    elif norm == 'inf':
-        atk = torchattacks.AutoAttack(model, norm='Linf', eps=epsilon)
-    else:
-        raise ValueError(f"Unsupported norm: '{norm}'. Please use '2' or 'inf'.")
-    
-    # FIX: Correct Normalization for CIFAR-10 (Standard Deviations were incorrect)
-    # Set Normalization so AutoAttack scales epsilon correctly
+    # Set proper normalization for scaling
     if dataset_name == "cifar10":
-        atk.set_normalization_used(
-            mean=torch.tensor([0.4914, 0.4822, 0.4465]).view(3, 1, 1).to(device), 
-            std=torch.tensor([0.225, 0.225, 0.225]).view(3, 1, 1).to(device)
-        )
+        atk.set_normalization_used(mean=[0.4914, 0.4822, 0.4465], std=[0.225, 0.225, 0.225])
     elif dataset_name == "imagenette":
-        atk.set_normalization_used(
-            mean=torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1).to(device), 
-            std=torch.tensor([0.225, 0.225, 0.225]).view(3, 1, 1).to(device)
-        )
+        atk.set_normalization_used(mean=[0.485, 0.456, 0.406], std=[0.225, 0.225, 0.225])
 
-    # --- Step 3: Run and Time Attack ---
-    if device.type == 'cuda':
-        torch.cuda.synchronize()
+    # --- Run Attack in Batches to Prevent OOM ---
+    adv_images_list = []
     start_time = time.time()
-
-    # Generate adversarial examples
-    adv_images = atk(correct_images, correct_targets)
     
-    if device.type == 'cuda':
-        torch.cuda.synchronize()
-    end_time = time.time()
-
-    total_time = end_time - start_time
+    for i in range(0, len(correct_images), batch_size):
+        b_imgs = correct_images[i:i+batch_size].to(device).contiguous()
+        b_targs = correct_targets[i:i+batch_size].to(device)
+        
+        # Attack just this small batch
+        adv_batch = atk(b_imgs, b_targs)
+        
+        # Immediately move to CPU to save GPU memory
+        adv_images_list.append(adv_batch.cpu())
+        
+    adv_images = torch.cat(adv_images_list, dim=0)
+    total_time = time.time() - start_time
     mean_time_per_image = total_time / len(correct_images)
 
-    # --- Step 4: Calculate ERA (True Robust Accuracy) ---
+    # --- Evaluate Robustness in Batches ---
     with torch.no_grad():
-        adv_outputs = model(adv_images)
-        adv_predictions = adv_outputs.argmax(dim=1)
+        all_adv_preds = []
+        for i in range(0, len(adv_images), batch_size):
+            b_imgs = adv_images[i:i+batch_size].to(device)
+            all_adv_preds.append(model(b_imgs).argmax(dim=1).cpu())
+            
+        adv_predictions = torch.cat(all_adv_preds, dim=0)
         
-        # Boolean mask: True where the model resisted the attack
-        robust_mask = (adv_predictions == correct_targets)
-        
+        # Compare predictions against original targets
+        robust_mask = (adv_predictions == correct_targets.cpu())
         num_robust_points = torch.sum(robust_mask).item()
         
         # Calculate ERA relative to the TOTAL original dataset
         cra = (num_robust_points / total_num_images) * 100.0
 
-    # --- Step 5: Return Results ---
     if return_robust_points:
-        # We need to map the boolean mask back to the original indices.
-        # clean_indices contains the original IDs of the images we attacked.
-        # robust_mask tells us which of those survived.
-        robust_indices = clean_indices[robust_mask.cpu()]
-        
+        # Map boolean mask back to original dataset indices
+        robust_indices = clean_indices[robust_mask]
         return cra, mean_time_per_image, robust_indices
-
+        
     return cra, mean_time_per_image
 
-
 import sys
-sys.path.insert(0,"/lustre/fswork/projects/rech/syo/utf64nw/robust-benchmark/SDP-CROWN/")
+sys.path.insert(0,"./SDP-CROWN/")
 import auto_LiRPA
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
@@ -1336,8 +1263,12 @@ def build_C(label, classes):
     
     return C
 
-
-def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indices, args, batch_size=2, norm=2, return_robust_points=False, x_U=None, x_L=None):
+import json 
+def compute_alphacrown_vra_and_time(
+    images, targets, model, epsilon, clean_indices, args, 
+    batch_size=2, norm=2, return_robust_points=False, x_U=None, x_L=None,
+    heavy_computation=False, partial_results=None, results_dict=None, results_filename=None, remove_sparse_ibp=False
+):
     """
     Computes Certified Robust Accuracy (CRA) using Alpha-Crown.
     
@@ -1346,11 +1277,9 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
     NOT the local epsilon bounds. The function handles the epsilon intersection internally.
     """
     batch_size = args.batch_size
-    # Safer device detection
     try:
         device = next(model.parameters()).device
     except StopIteration:
-        # If no parameters, use the device of the input tensor
         device = images.device
     total_num_images = images.shape[0]
     model.eval()
@@ -1367,85 +1296,91 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
             return 0.0, 0.0, torch.tensor([])
         return 0.0, 0.0
 
-    # --- Step 2: Initialize variables ---
+    # --- Step 2: Initialize variables & Checkpoint Loading ---
     num_robust_points = 0
     total_time = 0.0
     num_batches = (len(correct_images) + batch_size - 1) // batch_size
     robust_indices_list = []
+    start_batch = 0
+
+    if heavy_computation:
+        if partial_results is None:
+            partial_results = []
+        
+        # Align to the nearest completed batch to ensure no partial batch corruption
+        completed_batches = len(partial_results) // batch_size
+        partial_results = partial_results[:completed_batches * batch_size]
+        start_batch = completed_batches
+        num_robust_points = sum(partial_results)
+        
+        # Resume accumulated execution time if tracked
+        if results_dict is not None and "total_time" in results_dict:
+            total_time = results_dict.get("total_time", 0.0)
 
     # --- Step 3: Setup BoundedModule ---
-    # Check if the model contains any residual blocks
     has_residuals = any(isinstance(m, (BasicBlockLipschitz, BottleneckBlockLipschitz)) 
                         for m in model.modules())
     
-    # Determine the safest and most efficient conv_mode
-    # Matrix mode is mandatory for ResNets to handle the addition branches
     selected_conv_mode = "matrix" if has_residuals else "patches"
     
     print(f"Structure check: {'Residuals detected' if has_residuals else 'Sequential architecture'}.")
     print(f"Using auto_LiRPA conv_mode: {selected_conv_mode}")
     
-    # We disable "patches" mode to ensure stability with explicit bounds
     dummy_input = correct_images[0:1].to(device)
     bounded_model = BoundedModule(model, dummy_input, bound_opts={"conv_mode": selected_conv_mode}, verbose=False)
-    # bounded_model = BoundedModule(model, dummy_input, verbose=False)
     bounded_model.eval()
+    bounded_model.to(device)
 
-    print(f"Verifying {len(correct_images)} samples in {num_batches} batches...")
+    print(f"Verifying {len(correct_images)} samples in {num_batches} batches (Starting from batch {start_batch+1})...")
+
+    jitter = 1e-7
+    
 
     # --- Step 4: Batch Loop ---
-    for i in range(num_batches):
+    for i in range(start_batch, num_batches):
         start_idx = i * batch_size
         end_idx = min((i + 1) * batch_size, len(correct_images))
         
-        # Clone to avoid modifying original dataset
         batch_images = correct_images[start_idx:end_idx].clone().to(device)
         batch_targets = correct_targets[start_idx:end_idx]
         current_bs = batch_images.shape[0]
 
         # --- A. Prepare Global Domain Bounds (0 to 1) ---
-        # Expand global limits (x_L/x_U) to match current batch shape and ensure contiguity
         if x_L is not None:
-            batch_global_L = x_L.expand(current_bs, *x_L.shape[1:]).contiguous()
+            batch_global_L = x_L.expand(current_bs, *x_L.shape[1:]).contiguous() 
+#            - jitter
         else:
             batch_global_L = None
             
         if x_U is not None:
-            batch_global_U = x_U.expand(current_bs, *x_U.shape[1:]).contiguous()
+            batch_global_U = x_U.expand(current_bs, *x_U.shape[1:]).contiguous() 
+#            + jitter
         else:
             batch_global_U = None
 
         # --- B. CLAMP IMAGES (Crucial for Stability) ---
-        # Ensure the center point 'x' is mathematically inside the global domain [0, 1]
-        # This prevents the "Invalid Center" crash.
         if batch_global_L is not None and batch_global_U is not None:
             batch_images = torch.max(torch.min(batch_images, batch_global_U), batch_global_L)
 
-        # --- C. Define Perturbation Constraints ---
         
+        # --- C. Define Perturbation Constraints ---
         if norm == 'inf' or norm == float('inf'):
-            # STRATEGY: TIGHT BOX INTERSECTION
-            # ptb_L = max(Global_Min, x - epsilon)
-            # ptb_U = min(Global_Max, x + epsilon)
-            
-            # We calculate this manually to give the verifier the easiest job possible.
             if batch_global_L is not None and batch_global_U is not None:
-                ptb_L = torch.max(batch_global_L, batch_images - epsilon)
-                ptb_U = torch.min(batch_global_U, batch_images + epsilon)
-                
+                ptb_L = torch.max(batch_global_L, batch_images - epsilon) - jitter
+                ptb_U = torch.min(batch_global_U, batch_images + epsilon) + jitter
                 ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon, x_L=ptb_L, x_U=ptb_U)
             else:
-                # Fallback if no global bounds provided
                 ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon)
-                
         else:
-            # STRATEGY: GLOBAL BOUNDS + EPSILON SPHERE (Best for L2)
-            # For L2, we don't intersect with a box (which would imply Linf). 
-            # We just say "Don't go past 0 or 1" using x_L/x_U.
-            ptb = PerturbationLpNorm(norm=norm, eps=epsilon, x_L=batch_global_L, x_U=batch_global_U)
+            if getattr(args, 'use_conventional_groupsort', False):
+                # For L2, we add jitter to the global domain bounds
+                safe_L = batch_global_L - jitter if batch_global_L is not None else None
+                safe_U = batch_global_U + jitter if batch_global_U is not None else None
+                ptb = PerturbationLpNorm(norm=norm, eps=epsilon, x_L=safe_L, x_U=safe_U)
+            else:
+                ptb = PerturbationLpNorm(norm=norm, eps=epsilon, x_L=batch_global_L, x_U=batch_global_U)
 
         bounded_input = BoundedTensor(batch_images, ptb)
-        
         num_classes = 10 
         c = build_C(batch_targets.to("cpu"), num_classes).to(device)
 
@@ -1454,17 +1389,28 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
             torch.cuda.synchronize()
         start_time_batch = time.time()
         
-        # Optimize bounds (Alpha-CROWN settings)
-        bounded_model.set_bound_opts({
-            'optimize_bound_args': {
-                'iteration': 300, 
-                'lr_alpha': args.lr_alpha,
-                'early_stop_patience': 20, 
-                'enable_opt_interm_bounds': True, 
-                'verbosity': False
-            }, 
-            'verbosity': False
-        })
+        if remove_sparse_ibp:
+          bounded_model.set_bound_opts({
+              'optimize_bound_args': {
+                  'iteration': 300, 
+                  'lr_alpha': args.lr_alpha,
+                  'early_stop_patience': 20, 
+                  'enable_opt_interm_bounds': True, 
+                  'verbosity': False
+              }, 
+              'verbosity': False, 'sparse_intermediate_bounds': False
+          })
+        else:
+          bounded_model.set_bound_opts({
+              'optimize_bound_args': {
+                  'iteration': 300, 
+                  'lr_alpha': args.lr_alpha,
+                  'early_stop_patience': 20, 
+                  'enable_opt_interm_bounds': True, 
+                  'verbosity': False
+              }, 
+              'verbosity': False
+          })
         
         lb_diff = bounded_model.compute_bounds(x=(bounded_input,), C=c, method='alpha-crown')[0]
         
@@ -1475,11 +1421,23 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
 
         # --- Check Robustness ---
         is_robust = (lb_diff.view(current_bs, num_classes - 1) > 0).all(dim=1)
-        num_robust_points += torch.sum(is_robust).item()
+        is_robust_list = is_robust.cpu().tolist()
         
-        if return_robust_points:
-            batch_global_indices = clean_indices[start_idx:end_idx]
-            robust_indices_list.append(batch_global_indices[is_robust.cpu()])
+        if heavy_computation:
+            partial_results.extend(is_robust_list)
+            num_robust_points = sum(partial_results)
+            
+            # Real-time state preservation inside the batch loop
+            if results_dict is not None and results_filename is not None:
+                results_dict["partial_results"] = partial_results
+                results_dict["total_time"] = total_time
+                with open(results_filename, 'w') as f:
+                    json.dump(results_dict, f, indent=4)
+        else:
+            num_robust_points += sum(is_robust_list)
+            if return_robust_points:
+                batch_global_indices = clean_indices[start_idx:end_idx]
+                robust_indices_list.append(batch_global_indices[is_robust.cpu()])
 
         print(f"  Batch {i+1}/{num_batches}: {torch.sum(is_robust).item()}/{current_bs} robust.", end='\r')
 
@@ -1489,7 +1447,12 @@ def compute_alphacrown_vra_and_time(images, targets, model, epsilon, clean_indic
     mean_time_per_image = total_time / len(correct_images) if len(correct_images) > 0 else 0.0
 
     if return_robust_points:
-        all_robust_indices = torch.cat(robust_indices_list) if robust_indices_list else torch.tensor([])
+        if heavy_computation:
+            # Reconstruct robust indices directly from boolean mask list
+            partial_results_tensor = torch.tensor(partial_results, dtype=torch.bool)
+            all_robust_indices = clean_indices[partial_results_tensor]
+        else:
+            all_robust_indices = torch.cat(robust_indices_list) if robust_indices_list else torch.tensor([])
         return cra, mean_time_per_image, all_robust_indices
 
     return cra, mean_time_per_image
@@ -1498,7 +1461,7 @@ import time
 import torch
 import numpy as np
 
-sys.path.append("/lustre/fswork/projects/rech/syo/utf64nw/robust-benchmark/alpha-beta-CROWN/complete_verifier")
+sys.path.append("./alpha-beta-CROWN/complete_verifier")
 from abcrown import ABCROWN # Import the main class from your script
 
 
@@ -1585,17 +1548,11 @@ def compute_alphabeta_vra_and_time(dataset_name, model_name, model_path, epsilon
     return true_vra, avg_time
 
 
-sys.path.append("/lustre/fswork/projects/rech/syo/utf64nw/robust-benchmark/SDP-CROWN/")
+sys.path.append("./SDP-CROWN/")
 from sdp_crown import verified_sdp_crown
 
-
-# def compute_sdp_crown_vra(dataset, labels, model, radius, clean_output, device, classes, args, batch_size=1, return_robust_points=False, x_U=None, x_L=None, groupsort=False):
-#     return verified_sdp_crown(dataset, labels, model, radius, clean_output, device, classes, args, batch_size=1, return_robust_points=return_robust_points, x_U=x_U, x_L=x_L, groupsort=groupsort)
-# def compute_sdp_crown_fixed_bs(dataset, labels, model, radius, clean_output, device, classes, args, batch_size=1, return_robust_points=False, x_U=None, x_L=None, groupsort=False):
-#     return verified_sdp_crown_fixed_bs(dataset, labels, model, radius, clean_output, device, classes, args, batch_size=batch_size, return_robust_points=return_robust_points, x_U=x_U, x_L=x_L, groupsort=groupsort)
-
-def compute_sdp_crown_vra(dataset, labels, model, radius, clean_output, device, classes, args, batch_size=1, return_robust_points=False, x_U=None, x_L=None, groupsort=False):
-    return verified_sdp_crown(dataset, labels, model, radius, clean_output, device, classes, args, batch_size=1, return_robust_points=return_robust_points, x_U=x_U, x_L=x_L, groupsort=groupsort)
+def compute_sdp_crown_vra(dataset, labels, model, radius, clean_output, device, classes, args, batch_size=1, return_robust_points=False, x_U=None, x_L=None, groupsort=False, remove_sparse_ibp=False):
+    return verified_sdp_crown(dataset, labels, model, radius, clean_output, device, classes, args, batch_size=1, return_robust_points=return_robust_points, x_U=x_U, x_L=x_L, groupsort=groupsort, remove_sparse_ibp=remove_sparse_ibp)
     
 # Helper function to find the first leaf module
 def starts_with_affine(model):
@@ -1700,6 +1657,8 @@ def compute_hybrid_vra(images, targets, model, eps_rescaled, clean_indices, devi
     import time
     start_time = time.time()
     
+    hybrid_backend=args.hybrid_backend
+    
     try:
         from deel import torchlip
     except ImportError:
@@ -1756,174 +1715,45 @@ def compute_hybrid_vra(images, targets, model, eps_rescaled, clean_indices, devi
                 batch_size=args.batch_size, norm='inf', return_robust_points=True
             )
     else:
-        if sdp:
-            groupsort = "GNP" in args.model or "Bjork" in args.model
-            
-            if not starts_with_affine(f2_suffix_vanilla):
-                f2_suffix_sdp = wrap_with_identity(f2_suffix_vanilla, z_k)
-            else:
-                f2_suffix_sdp = f2_suffix_vanilla
+        if not starts_with_affine(f2_suffix_vanilla):
+            f2_suffix = wrap_with_identity(f2_suffix_vanilla, z_k)
+            print("WRAPPED WITH AFFINE")
+        else:
+            f2_suffix = f2_suffix_vanilla
+        # --- ROUTE TO THE CHOSEN BACKEND ---
+        if hybrid_backend == 'sdp':
+#            if not starts_with_affine(f2_suffix_vanilla):
+#                f2_suffix_sdp = wrap_with_identity(f2_suffix_vanilla, z_k)
+#            else:
+#                f2_suffix_sdp = f2_suffix_vanilla
                 
             vra, t_v, idx_robust = compute_sdp_crown_vra(
-                z_k, targets, f2_suffix_sdp, float(intermediate_epsilon), clean_indices, 
-                device, classes, args, batch_size=1, return_robust_points=True, x_U=None, x_L=None, groupsort=groupsort
+                z_k, targets, f2_suffix, float(intermediate_epsilon), clean_indices, 
+                device, classes, args, batch_size=1, return_robust_points=True, 
+                x_U=None, x_L=None, groupsort=groupsort
+            )
+        elif hybrid_backend == 'alphacrown':
+            vra, t_v, idx_robust = compute_alphacrown_vra_and_time(
+                z_k, targets, f2_suffix, intermediate_epsilon, clean_indices, args, 
+                batch_size=args.batch_size, norm=args.norm, x_U=None, x_L=None, return_robust_points=True
+            )
+        elif hybrid_backend == 'crown':
+            vra, t_v, idx_robust = compute_backward_crown_vra_and_time(
+                z_k, targets, f2_suffix, intermediate_epsilon, clean_indices, args, 
+                batch_size=args.batch_size, norm=args.norm, x_U=None, x_L=None, return_robust_points=True
+            )
+        elif hybrid_backend == 'ibpcrown':
+            vra, t_v, idx_robust = compute_ibpcrown_vra_and_time(
+                z_k, targets, f2_suffix, intermediate_epsilon, clean_indices, args, 
+                batch_size=args.batch_size, norm=args.norm, x_U=None, x_L=None, return_robust_points=True
             )
         else:
-            vra, t_v, idx_robust = compute_alphacrown_vra_and_time(
-                z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args, 
-                batch_size=args.batch_size, norm=2, x_U=None, x_L=None, return_robust_points=True
-            )
+            raise ValueError(f"Unknown hybrid backend selected: {hybrid_backend}")
 
     total_time = time.time() - start_time
     return vra, total_time, idx_robust
 
-#import torch
-#import torch.nn as nn
-#import numpy as np
-#
-#def compute_hybrid_vra(images, targets, model, eps_rescaled, clean_indices, device, classes, args, L_prefix=1.0, sdp=True):
-#    """
-#    Splits the model into a 1-Lipschitz prefix and standard suffix,
-#    then runs CROWN-based verification on the intermediate activations.
-#    Scales the intermediate epsilon using the provided L_prefix.
-#    The split_index now corresponds to the candidate split indices.
-#    """
-#    import time
-#    start_time = time.time()
-#    
-#    try:
-#        from deel import torchlip
-#    except ImportError:
-#        print("Warning: deel.torchlip not found. Hybrid splitting might fail if using torchlip layers.")
-#        import torch.nn as torchlip # fallback
-#        
-#    # ======================================================================
-#    # 1. FLATTEN THE MODEL
-#    # ======================================================================
-#    is_resnet = "ResNet" in model.__class__.__name__
-#    
-#    if is_resnet:
-#        # Inline ResNet flattening to avoid scope/import errors in project_utils.py
-#        all_layers = []
-#        all_layers.append(model.conv1)
-#        all_layers.append(model.bc1)
-#        all_layers.append(model.act)
-#        
-#        if hasattr(model, 'pool1') and not isinstance(model.pool1, nn.Identity):
-#            all_layers.append(model.pool1)
-#            
-#        if hasattr(model, 'layers'):
-#            for layer_group in model.layers:
-#                for block in layer_group:
-#                    all_layers.append(block)
-#                    
-#        if hasattr(model, 'pool'):
-#            all_layers.append(model.pool)
-#            
-#        all_layers.append(nn.Flatten(1))
-#        
-#        if hasattr(model, 'fc'):
-#            all_layers.append(model.fc)
-#    else:
-#        all_layers = list(model.children())
-#
-#    # ======================================================================
-#    # 2. COMPUTE CANDIDATE INDICES
-#    # ======================================================================
-#    candidate_indices = [0]
-#    for k in range(1, len(all_layers)):
-#        layer_before = all_layers[k-1]
-#        layer_after = all_layers[k]
-#        
-#        if is_resnet:
-#            # ResNet candidate rules
-#            if layer_before.__class__.__name__ in ["LirpaBatchCentering2D", "BasicBlockLipschitz"]:
-#                candidate_indices.append(k)
-#        else:
-#            # Sequential/VGG candidate rules
-#            if isinstance(layer_before, (nn.Conv2d, nn.Linear)):
-#                if not isinstance(layer_after, (nn.Conv2d, nn.Linear, nn.Flatten)):
-#                    candidate_indices.append(k)
-#                    
-#    if len(all_layers) not in candidate_indices:
-#        candidate_indices.append(len(all_layers))
-#
-#    # ======================================================================
-#    # 3. MAP ARG TO ACTUAL SPLIT INDEX
-#    # ======================================================================
-#    candidate_idx = args.split_index
-#    
-#    if candidate_idx < 0 or candidate_idx >= len(candidate_indices):
-#        raise ValueError(f"Invalid candidate split_index: {candidate_idx}. Available candidates are 0 to {len(candidate_indices)-1}")
-#
-#    actual_split_idx = candidate_indices[candidate_idx]
-#
-#    # ======================================================================
-#    # 4. SPLIT THE MODEL
-#    # ======================================================================
-#    f1_prefix = torchlip.Sequential(*all_layers[:actual_split_idx]).to(device).eval()
-#    f2_suffix_lip = torchlip.Sequential(*all_layers[actual_split_idx:]).to(device).eval()
-#    
-#    # Convert suffix for LiRPA (assuming vanilla_export is in project_utils)
-#    try:
-#        f2_suffix_vanilla = vanilla_export(f2_suffix_lip).to(device).eval()
-#    except NameError:
-#        print("Warning: vanilla_export not found. Passing raw suffix.")
-#        f2_suffix_vanilla = f2_suffix_lip
-#
-#    if str(args.norm) == 'inf':
-#        # Apply algebraic penalty ONCE to convert spec to backbone geometry
-#        input_dim = images[0].numel()
-#        eps_backbone = eps_rescaled * np.sqrt(input_dim) 
-#    else:
-#        eps_backbone = eps_rescaled
-#
-#    # Scale the epsilon for the intermediate layer propagation using the passed L_prefix
-#    intermediate_epsilon = float(eps_backbone * L_prefix)
-#
-#    # Step 1: Lossless L2 propagation through prefix
-#    with torch.no_grad():
-#        z_k = f1_prefix(images.to(device))
-#
-#    # Step 2: Suffix Verification
-#    if str(args.norm) == 'inf':
-#        if sdp:
-#            if not starts_with_affine(f2_suffix_vanilla):
-#                f2_suffix_sdp = wrap_with_identity(f2_suffix_vanilla, z_k)
-#            else:
-#                f2_suffix_sdp = f2_suffix_vanilla
-#                
-#            vra, t_v, idx_robust = compute_sdp_crown_vra(
-#                z_k, targets, f2_suffix_sdp, intermediate_epsilon, clean_indices, 
-#                device, classes, args, batch_size=1, return_robust_points=True
-#            )
-#        else:
-#            vra, t_v, idx_robust = compute_alphacrown_vra_and_time(
-#                z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args, 
-#                batch_size=args.batch_size, norm='inf', return_robust_points=True
-#            )
-#    else:
-#        if sdp:
-#            groupsort = "GNP" in args.model or "Bjork" in args.model
-#            
-#            if not starts_with_affine(f2_suffix_vanilla):
-#                f2_suffix_sdp = wrap_with_identity(f2_suffix_vanilla, z_k)
-#            else:
-#                f2_suffix_sdp = f2_suffix_vanilla
-#                
-#            vra, t_v, idx_robust = compute_sdp_crown_vra(
-#                z_k, targets, f2_suffix_sdp, float(intermediate_epsilon), clean_indices, 
-#                device, classes, args, batch_size=1, return_robust_points=True, x_U=None, x_L=None, groupsort=groupsort
-#            )
-#        else:
-#            vra, t_v, idx_robust = compute_alphacrown_vra_and_time(
-#                z_k, targets, f2_suffix_vanilla, intermediate_epsilon, clean_indices, args, 
-#                batch_size=args.batch_size, norm=2, x_U=None, x_L=None, return_robust_points=True
-#            )
-#
-#    total_time = time.time() - start_time
-#    return vra, total_time, idx_robust
-#    
+
     
 import pandas as pd
 import os
@@ -2051,3 +1881,292 @@ def compute_hybrid_vra_comparison(images, targets, model, eps_rescaled, clean_in
     best_indices = indices_map[best_key]
 
     return best_vra, (time.time() - start_time), best_indices
+    
+def replace_groupsort_conventional(model):
+  """ 
+    Recursively replaces GroupSort_General with the Conventional variant.
+  """
+  for name, module in model.named_children():
+    if isinstance(module, GroupSort_General):
+      setattr(model, name, GroupSort2Conventional())
+    else:
+      replace_groupsort_conventional(module)
+      
+def compute_ibpcrown_vra_and_time(images, targets, model, epsilon, clean_indices, args, batch_size=1, norm=2, return_robust_points=False, x_U=None, x_L=None, remove_sparse_ibp=False):
+    """
+    Computes Certified Robust Accuracy (CRA) using IBP+CROWN.
+    
+    CRITICAL NOTE: 
+    x_L and x_U here should represent the GLOBAL valid data range (e.g. 0 and 1), 
+    NOT the local epsilon bounds. The function handles the epsilon intersection internally.
+    """
+    batch_size = args.batch_size
+    # Safer device detection
+    try:
+        device = next(model.parameters()).device
+    except StopIteration:
+        # If no parameters, use the device of the input tensor
+        device = images.device
+    total_num_images = images.shape[0]
+    model.eval()
+    
+    if not isinstance(clean_indices, torch.Tensor):
+        clean_indices = torch.tensor(clean_indices)
+
+    # --- Step 1: Filter for correctly classified samples ---
+    correct_images = images[clean_indices]
+    correct_targets = targets[clean_indices]
+
+    if len(correct_images) == 0:
+        if return_robust_points:
+            return 0.0, 0.0, torch.tensor([])
+        return 0.0, 0.0
+
+    # --- Step 2: Initialize variables ---
+    num_robust_points = 0
+    total_time = 0.0
+    num_batches = (len(correct_images) + batch_size - 1) // batch_size
+    robust_indices_list = []
+
+    # --- Step 3: Setup BoundedModule ---
+    # Check if the model contains any residual blocks
+    has_residuals = any(type(m).__name__ in ['BasicBlockLipschitz', 'BottleneckBlockLipschitz']
+                        for m in model.modules())
+    
+    # Determine the safest and most efficient conv_mode
+#    selected_conv_mode = "matrix" if has_residuals else "patches"
+    # FIX: Force 'patches' mode to avoid internal BoundConcat L2 bugs in matrix mode
+    
+    print(f"Structure check: {'Residuals detected' if has_residuals else 'Sequential architecture'}.")
+    print(f"Using auto_LiRPA conv_mode: {selected_conv_mode}")
+    
+    dummy_input = correct_images[0:1].to(device)
+    if remove_sparse_ibp:
+      bounds_opts = {'sparse_intermediate_bounds': False, "conv_mode": "patches"}
+    else:
+      bounds_opts = {'sparse_intermediate_bounds': True, "conv_mode": "patches"}
+      
+    bounded_model = BoundedModule(model, dummy_input, bound_opts=bounds_opts, verbose=False)
+    bounded_model.eval()
+
+    print(f"Verifying {len(correct_images)} samples in {num_batches} batches using IBP+CROWN...")
+
+    # --- Step 4: Batch Loop ---
+    for i in range(num_batches):
+        start_idx = i * batch_size
+        end_idx = min((i + 1) * batch_size, len(correct_images))
+        
+        # Clone to avoid modifying original dataset
+        batch_images = correct_images[start_idx:end_idx].clone().to(device)
+        batch_targets = correct_targets[start_idx:end_idx]
+        current_bs = batch_images.shape[0]
+
+        # --- A. Prepare Global Domain Bounds (0 to 1) ---
+        if x_L is not None:
+            batch_global_L = x_L.expand(current_bs, *x_L.shape[1:]).contiguous()
+        else:
+            batch_global_L = None
+            
+        if x_U is not None:
+            batch_global_U = x_U.expand(current_bs, *x_U.shape[1:]).contiguous()
+        else:
+            batch_global_U = None
+
+        # --- B. CLAMP IMAGES (Crucial for Stability) ---
+        if batch_global_L is not None and batch_global_U is not None:
+            batch_images = torch.max(torch.min(batch_images, batch_global_U), batch_global_L)
+
+        # --- C. Define Perturbation Constraints ---
+        if norm == 'inf' or norm == float('inf'):
+            # STRATEGY: TIGHT BOX INTERSECTION
+            if batch_global_L is not None and batch_global_U is not None:
+                ptb_L = torch.max(batch_global_L, batch_images - epsilon)
+                ptb_U = torch.min(batch_global_U, batch_images + epsilon)
+                
+                ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon, x_L=ptb_L, x_U=ptb_U)
+            else:
+                ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon)
+                
+        else:
+            # STRATEGY: GLOBAL BOUNDS + EPSILON SPHERE (Best for L2)
+            ptb = PerturbationLpNorm(norm=norm, eps=epsilon, x_L=batch_global_L, x_U=batch_global_U)
+
+        bounded_input = BoundedTensor(batch_images, ptb)
+        
+        num_classes = 10 
+        c = build_C(batch_targets.to("cpu"), num_classes).to(device)
+
+        # --- Time the verification ---
+        if device.type == 'cuda':
+            torch.cuda.synchronize()
+        start_time_batch = time.time()
+        
+        # Unlike Alpha-CROWN, IBP+CROWN does not require iterative optimization bound settings.
+        # It calculates both IBP bounds and CROWN bounds and takes the tightest element-wise.
+        lb_diff = bounded_model.compute_bounds(x=(bounded_input,), C=c, method='IBP+CROWN')[0]
+        
+        if device.type == 'cuda':
+            torch.cuda.synchronize()
+        end_time_batch = time.time()
+        total_time += (end_time_batch - start_time_batch)
+
+        # --- Check Robustness ---
+        is_robust = (lb_diff.view(current_bs, num_classes - 1) > 0).all(dim=1)
+        num_robust_points += torch.sum(is_robust).item()
+        
+        if return_robust_points:
+            batch_global_indices = clean_indices[start_idx:end_idx]
+            robust_indices_list.append(batch_global_indices[is_robust.cpu()])
+
+        print(f"  Batch {i+1}/{num_batches}: {torch.sum(is_robust).item()}/{current_bs} robust.", end='\r')
+
+    print("\nBatch verification finished.") 
+    
+    cra = (num_robust_points / total_num_images) * 100.0
+    mean_time_per_image = total_time / len(correct_images) if len(correct_images) > 0 else 0.0
+
+    if return_robust_points:
+        all_robust_indices = torch.cat(robust_indices_list) if robust_indices_list else torch.tensor([])
+        return cra, mean_time_per_image, all_robust_indices
+
+    return cra, mean_time_per_image
+    
+def compute_backward_crown_vra_and_time(images, targets, model, epsilon, clean_indices, args, batch_size=1, norm=2, return_robust_points=False, x_U=None, x_L=None, remove_sparse_ibp=False):
+    """
+    Computes Certified Robust Accuracy (CRA) using standard Backward CROWN.
+    
+    CRITICAL NOTE: 
+    x_L and x_U here should represent the GLOBAL valid data range (e.g. 0 and 1), 
+    NOT the local epsilon bounds. The function handles the epsilon intersection internally.
+    """
+    batch_size = args.batch_size
+    # Safer device detection
+    try:
+        device = next(model.parameters()).device
+    except StopIteration:
+        # If no parameters, use the device of the input tensor
+        device = images.device
+    total_num_images = images.shape[0]
+    model.eval()
+    
+    if not isinstance(clean_indices, torch.Tensor):
+        clean_indices = torch.tensor(clean_indices)
+
+    # --- Step 1: Filter for correctly classified samples ---
+    correct_images = images[clean_indices]
+    correct_targets = targets[clean_indices]
+
+    if len(correct_images) == 0:
+        if return_robust_points:
+            return 0.0, 0.0, torch.tensor([])
+        return 0.0, 0.0
+
+    # --- Step 2: Initialize variables ---
+    num_robust_points = 0
+    total_time = 0.0
+    num_batches = (len(correct_images) + batch_size - 1) // batch_size
+    robust_indices_list = []
+
+    # --- Step 3: Setup BoundedModule ---
+    # Check if the model contains any residual blocks
+    has_residuals = any(type(m).__name__ in ['BasicBlockLipschitz', 'BottleneckBlockLipschitz']
+                        for m in model.modules())
+    
+    # Determine the safest and most efficient conv_mode
+    # FIX: Force 'patches' mode to avoid internal BoundConcat L2 bugs in matrix mode
+    selected_conv_mode = "patches"
+    
+    print(f"Structure check: {'Residuals detected' if has_residuals else 'Sequential architecture'}.")
+    print(f"Using auto_LiRPA conv_mode: {selected_conv_mode}")
+    
+    dummy_input = correct_images[0:1].to(device)
+    if remove_sparse_ibp:
+      bounds_opts = {'sparse_intermediate_bounds': False, "conv_mode": "patches"}
+    else:
+      bounds_opts = {'sparse_intermediate_bounds': True, "conv_mode": "patches"}
+      
+    bounded_model = BoundedModule(model, dummy_input, bound_opts=bounds_opts, verbose=False)
+    bounded_model.eval()
+
+    print(f"Verifying {len(correct_images)} samples in {num_batches} batches using Backward CROWN...")
+
+    # --- Step 4: Batch Loop ---
+    for i in range(num_batches):
+        start_idx = i * batch_size
+        end_idx = min((i + 1) * batch_size, len(correct_images))
+        
+        # Clone to avoid modifying original dataset
+        batch_images = correct_images[start_idx:end_idx].clone().to(device)
+        batch_targets = correct_targets[start_idx:end_idx]
+        current_bs = batch_images.shape[0]
+
+        # --- A. Prepare Global Domain Bounds (0 to 1) ---
+        if x_L is not None:
+            batch_global_L = x_L.expand(current_bs, *x_L.shape[1:]).contiguous()
+        else:
+            batch_global_L = None
+            
+        if x_U is not None:
+            batch_global_U = x_U.expand(current_bs, *x_U.shape[1:]).contiguous()
+        else:
+            batch_global_U = None
+
+        # --- B. CLAMP IMAGES (Crucial for Stability) ---
+        if batch_global_L is not None and batch_global_U is not None:
+            batch_images = torch.max(torch.min(batch_images, batch_global_U), batch_global_L)
+
+        # --- C. Define Perturbation Constraints ---
+        if norm == 'inf' or norm == float('inf'):
+            # STRATEGY: TIGHT BOX INTERSECTION
+            if batch_global_L is not None and batch_global_U is not None:
+                ptb_L = torch.max(batch_global_L, batch_images - epsilon)
+                ptb_U = torch.min(batch_global_U, batch_images + epsilon)
+                
+                ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon, x_L=ptb_L, x_U=ptb_U)
+            else:
+                ptb = PerturbationLpNorm(norm=np.inf, eps=epsilon)
+                
+        else:
+            # STRATEGY: GLOBAL BOUNDS + EPSILON SPHERE (Best for L2)
+            ptb = PerturbationLpNorm(norm=norm, eps=epsilon, x_L=batch_global_L, x_U=batch_global_U)
+
+        bounded_input = BoundedTensor(batch_images, ptb)
+        
+        num_classes = 10 
+        c = build_C(batch_targets.to("cpu"), num_classes).to(device)
+
+        # --- Time the verification ---
+        if device.type == 'cuda':
+            torch.cuda.synchronize()
+        start_time_batch = time.time()
+        
+        # =========================================================================
+        # MODIFIED: Changed method from 'IBP+CROWN' to 'backward'
+        # =========================================================================
+        lb_diff = bounded_model.compute_bounds(x=(bounded_input,), C=c, method='backward')[0]
+        
+        if device.type == 'cuda':
+            torch.cuda.synchronize()
+        end_time_batch = time.time()
+        total_time += (end_time_batch - start_time_batch)
+
+        # --- Check Robustness ---
+        is_robust = (lb_diff.view(current_bs, num_classes - 1) > 0).all(dim=1)
+        num_robust_points += torch.sum(is_robust).item()
+        
+        if return_robust_points:
+            batch_global_indices = clean_indices[start_idx:end_idx]
+            robust_indices_list.append(batch_global_indices[is_robust.cpu()])
+
+        print(f"  Batch {i+1}/{num_batches}: {torch.sum(is_robust).item()}/{current_bs} robust.", end='\r')
+
+    print("\nBatch verification finished.") 
+    
+    cra = (num_robust_points / total_num_images) * 100.0
+    mean_time_per_image = total_time / len(correct_images) if len(correct_images) > 0 else 0.0
+
+    if return_robust_points:
+        all_robust_indices = torch.cat(robust_indices_list) if robust_indices_list else torch.tensor([])
+        return cra, mean_time_per_image, all_robust_indices
+
+    return cra, mean_time_per_image
